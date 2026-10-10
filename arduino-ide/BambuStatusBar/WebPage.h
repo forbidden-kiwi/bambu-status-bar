@@ -461,6 +461,8 @@ function setIdle(id,value,opts){
   // Status polling must not wipe values the user just filled from a scan card
   // with empty NVS (printer not bound yet).
   if(opts&&opts.keepIfEmpty&&!value&&el.value) return;
+  // Keep a scan/manual choice that differs from the saved/connected value.
+  if(opts&&opts.keepIfLocal&&el.value&&el.value!==String(value||"")) return;
   el.value=value;
 }
 function setBadge(el,cls){el.className="badge "+cls}
@@ -506,7 +508,7 @@ function applyStatus(data){
   $("wifiDetail").textContent=wifi.connecting?(t("wifi_try")+(wifi.target||"")):(wifiOk?(wifi.ssid+" · "+wifi.ip):t("wifi_off"));
   $("mqttDetail").textContent=mqttOk?t("mqtt_on"):(printerReady?t("mqtt_off"):t("mqtt_wait"));
   setIdle("host", data.hostname||"");
-  setIdle("ssid", wifi.ssid||"");
+  setIdle("ssid", wifi.ssid||"", {keepIfEmpty:true, keepIfLocal:true});
   setIdle("printerIp", printer.ip||"", {keepIfEmpty:true});
   setIdle("printerSerial", printer.serial||"", {keepIfEmpty:true});
   if(document.activeElement!==$("printerCode") && printer.code) $("printerCode").placeholder="••••••••";
