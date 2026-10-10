@@ -28,7 +28,7 @@
 
 // ==== Config.h ====
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.2";
+constexpr const char* kFirmwareVersion = "1.0.3";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
