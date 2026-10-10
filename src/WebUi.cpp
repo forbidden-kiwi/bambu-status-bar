@@ -358,7 +358,11 @@ void WebUi::startAp() {
   }
   apChannel_ = channel;
   impl_->dns.stop();
-  impl_->dns.start(53, "*", WiFi.softAPIP());
+  // Captive DNS on :53 is only for offline setup. While STA is up it can
+  // interfere with outbound hostname lookups (GitHub OTA, etc.).
+  if (WiFi.status() != WL_CONNECTED) {
+    impl_->dns.start(53, "*", WiFi.softAPIP());
+  }
   apRunning_ = true;
 }
 
@@ -379,6 +383,14 @@ void WebUi::syncAp(bool staUp) {
   if (want == apRunning_) return;
   if (want) startAp();
   else stopAp();
+}
+
+void WebUi::syncCaptiveDns(bool staUp) {
+  if (!apRunning_ || !impl_) return;
+  // Only hijack DNS while offline (setup hotspot). With STA up, leave :53 free
+  // so api.github.com and other public hosts can resolve for OTA.
+  impl_->dns.stop();
+  if (!staUp) impl_->dns.start(53, "*", WiFi.softAPIP());
 }
 
 void WebUi::startMdns() {
@@ -460,7 +472,11 @@ void WebUi::pollWifiConnect() {
       }
     }
   }
-  staConnected_ = WiFi.status() == WL_CONNECTED;
+  const bool upNow = WiFi.status() == WL_CONNECTED;
+  if (upNow != staConnected_) {
+    staConnected_ = upNow;
+    syncCaptiveDns(staConnected_);
+  }
   if (staConnected_) {
     staLostSinceMs_ = 0;
     if (!hostnamePushed_ && !connectPending_ && !connectArmed_) {
@@ -951,6 +967,9 @@ void WebUi::handleFactory() {
 
 void WebUi::handleUpdateCheck() {
   noteActivity();
+  // Drop printer MQTT TLS first — ESP32-C6 often cannot open a second HTTPS
+  // session (GitHub) while MQTT is still connected; that surfaced as http--1.
+  if (onOtaStart_) onOtaStart_();
   const GithubReleaseInfo info = GithubOta::checkLatest();
   JsonDocument doc;
   doc["ok"] = info.ok;

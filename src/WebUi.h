@@ -43,6 +43,7 @@ class WebUi {
   void startAp();
   void stopAp();
   void syncAp(bool staUp);
+  void syncCaptiveDns(bool staUp);
   void startMdns();
   void startSsdp();
   void stopSsdp();

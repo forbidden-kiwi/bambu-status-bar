@@ -3,9 +3,9 @@
 #include "Config.h"
 
 #include <HTTPClient.h>
-#include <NetworkClientSecure.h>
 #include <Update.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 #include <ArduinoJson.h>
 #include <cstring>
@@ -56,16 +56,30 @@ int compareSemVer(const SemVer& a, const SemVer& b) {
   return 0;
 }
 
+void setHttpError(String& errorOut, HTTPClient& http, int code) {
+  Serial.print(F("OTA HTTP "));
+  Serial.print(code);
+  Serial.print(F(" "));
+  Serial.print(http.errorToString(code));
+  Serial.print(F(" heap="));
+  Serial.println(ESP.getFreeHeap());
+  // Negative codes are transport/TLS failures; keep a stable UI key.
+  errorOut = (code < 0) ? String("http-connect") : (String("http-") + code);
+}
+
 bool httpGetToString(const String& url, String& body, String& errorOut) {
-  NetworkClientSecure client;
+  // Same secure-client path as Bambu MQTT (WiFiClientSecure), so TLS behaves
+  // consistently on ESP32-C6 / Arduino 3.x.
+  WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(15000);
+  client.setHandshakeTimeout(15);
+  client.setTimeout(20000);
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(15000);
+  http.setTimeout(20000);
   if (!http.begin(client, url)) {
     errorOut = "http-begin";
     return false;
@@ -73,7 +87,7 @@ bool httpGetToString(const String& url, String& body, String& errorOut) {
   http.addHeader("Accept", "application/vnd.github+json");
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    errorOut = String("http-") + code;
+    setHttpError(errorOut, http, code);
     http.end();
     return false;
   }
@@ -150,15 +164,16 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
     return false;
   }
 
-  NetworkClientSecure client;
+  WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(30000);
+  client.setHandshakeTimeout(30);
+  client.setTimeout(60000);
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(30000);
+  http.setTimeout(60000);
   if (!http.begin(client, downloadUrl)) {
     errorOut = "http-begin";
     return false;
@@ -166,7 +181,7 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
 
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    errorOut = String("http-") + code;
+    setHttpError(errorOut, http, code);
     http.end();
     return false;
   }

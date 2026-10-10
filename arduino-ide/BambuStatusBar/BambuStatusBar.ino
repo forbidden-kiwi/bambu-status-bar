@@ -13,7 +13,6 @@
 #include <functional>
 #include <Preferences.h>
 #include <HTTPClient.h>
-#include <NetworkClientSecure.h>
 #include <Update.h>
 #include <WiFi.h>
 #include <AsyncUDP.h>
@@ -29,7 +28,7 @@
 
 // ==== Config.h ====
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.1";
+constexpr const char* kFirmwareVersion = "1.0.2";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
@@ -1657,16 +1656,30 @@ int compareSemVer(const SemVer& a, const SemVer& b) {
   return 0;
 }
 
+void setHttpError(String& errorOut, HTTPClient& http, int code) {
+  Serial.print(F("OTA HTTP "));
+  Serial.print(code);
+  Serial.print(F(" "));
+  Serial.print(http.errorToString(code));
+  Serial.print(F(" heap="));
+  Serial.println(ESP.getFreeHeap());
+  // Negative codes are transport/TLS failures; keep a stable UI key.
+  errorOut = (code < 0) ? String("http-connect") : (String("http-") + code);
+}
+
 bool httpGetToString(const String& url, String& body, String& errorOut) {
-  NetworkClientSecure client;
+  // Same secure-client path as Bambu MQTT (WiFiClientSecure), so TLS behaves
+  // consistently on ESP32-C6 / Arduino 3.x.
+  WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(15000);
+  client.setHandshakeTimeout(15);
+  client.setTimeout(20000);
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(15000);
+  http.setTimeout(20000);
   if (!http.begin(client, url)) {
     errorOut = "http-begin";
     return false;
@@ -1674,7 +1687,7 @@ bool httpGetToString(const String& url, String& body, String& errorOut) {
   http.addHeader("Accept", "application/vnd.github+json");
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    errorOut = String("http-") + code;
+    setHttpError(errorOut, http, code);
     http.end();
     return false;
   }
@@ -1751,15 +1764,16 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
     return false;
   }
 
-  NetworkClientSecure client;
+  WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(30000);
+  client.setHandshakeTimeout(30);
+  client.setTimeout(60000);
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(30000);
+  http.setTimeout(60000);
   if (!http.begin(client, downloadUrl)) {
     errorOut = "http-begin";
     return false;
@@ -1767,7 +1781,7 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
 
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    errorOut = String("http-") + code;
+    setHttpError(errorOut, http, code);
     http.end();
     return false;
   }
@@ -2305,7 +2319,7 @@ ota_gh_ready:"Prüft die neueste Release auf GitHub.",
 ota_up_to_date:"Du bist auf dem neuesten Stand.",ota_available:"Update verfügbar.",
 ota_checking:"Prüfe GitHub…",ota_installing:"Lade Firmware und flashe…",
 err_no_wifi:"Zuerst mit Wi-Fi verbinden",err_no_release:"Kein Release gefunden",err_no_asset:"Kein firmware.bin im Release",
-err_http_begin:"Verbindung fehlgeschlagen",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
+err_http_begin:"Verbindung fehlgeschlagen",err_http_connect:"GitHub nicht erreichbar (TLS/DNS)",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
 err_short_write:"Download unvollständig",err_bad_version:"Versionsformat ungültig",err_bad_json:"Ungültige Antwort",
 err_bad_request:"Ungültige Anfrage",err_bad_lang:"Sprache ungültig",err_udp_bind:"UDP-Bind fehlgeschlagen",
 err_ota_busy:"OTA läuft bereits",err_bad_url:"URL ungültig",err_not_found:"Nicht gefunden",
@@ -2368,7 +2382,7 @@ ota_gh_ready:"Checks the latest release on GitHub.",
 ota_up_to_date:"You are up to date.",ota_available:"Update available.",
 ota_checking:"Checking GitHub…",ota_installing:"Downloading and flashing…",
 err_no_wifi:"Connect to Wi-Fi first",err_no_release:"No release found",err_no_asset:"No firmware.bin in release",
-err_http_begin:"Connection failed",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
+err_http_begin:"Connection failed",err_http_connect:"GitHub unreachable (TLS/DNS)",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
 err_short_write:"Incomplete download",err_bad_version:"Invalid version format",err_bad_json:"Invalid response",
 err_bad_request:"Invalid request",err_bad_lang:"Invalid language",err_udp_bind:"UDP bind failed",
 err_ota_busy:"OTA already in progress",err_bad_url:"Invalid URL",err_not_found:"Not found",
@@ -2697,6 +2711,7 @@ class WebUi {
   void startAp();
   void stopAp();
   void syncAp(bool staUp);
+  void syncCaptiveDns(bool staUp);
   void startMdns();
   void startSsdp();
   void stopSsdp();
@@ -3108,7 +3123,11 @@ void WebUi::startAp() {
   }
   apChannel_ = channel;
   impl_->dns.stop();
-  impl_->dns.start(53, "*", WiFi.softAPIP());
+  // Captive DNS on :53 is only for offline setup. While STA is up it can
+  // interfere with outbound hostname lookups (GitHub OTA, etc.).
+  if (WiFi.status() != WL_CONNECTED) {
+    impl_->dns.start(53, "*", WiFi.softAPIP());
+  }
   apRunning_ = true;
 }
 
@@ -3129,6 +3148,14 @@ void WebUi::syncAp(bool staUp) {
   if (want == apRunning_) return;
   if (want) startAp();
   else stopAp();
+}
+
+void WebUi::syncCaptiveDns(bool staUp) {
+  if (!apRunning_ || !impl_) return;
+  // Only hijack DNS while offline (setup hotspot). With STA up, leave :53 free
+  // so api.github.com and other public hosts can resolve for OTA.
+  impl_->dns.stop();
+  if (!staUp) impl_->dns.start(53, "*", WiFi.softAPIP());
 }
 
 void WebUi::startMdns() {
@@ -3210,7 +3237,11 @@ void WebUi::pollWifiConnect() {
       }
     }
   }
-  staConnected_ = WiFi.status() == WL_CONNECTED;
+  const bool upNow = WiFi.status() == WL_CONNECTED;
+  if (upNow != staConnected_) {
+    staConnected_ = upNow;
+    syncCaptiveDns(staConnected_);
+  }
   if (staConnected_) {
     staLostSinceMs_ = 0;
     if (!hostnamePushed_ && !connectPending_ && !connectArmed_) {
@@ -3701,6 +3732,9 @@ void WebUi::handleFactory() {
 
 void WebUi::handleUpdateCheck() {
   noteActivity();
+  // Drop printer MQTT TLS first — ESP32-C6 often cannot open a second HTTPS
+  // session (GitHub) while MQTT is still connected; that surfaced as http--1.
+  if (onOtaStart_) onOtaStart_();
   const GithubReleaseInfo info = GithubOta::checkLatest();
   JsonDocument doc;
   doc["ok"] = info.ok;
