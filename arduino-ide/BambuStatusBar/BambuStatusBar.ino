@@ -1,4 +1,4 @@
-// GENERATED FILE â€” do not edit directly.
+// GENERATED FILE — do not edit directly.
 // Source of truth is firmware/src/*.{h,cpp}; regenerate with:
 //   python3 firmware/tools/generate_arduino_sketch.py
 
@@ -16,13 +16,14 @@
 #include <NetworkClientSecure.h>
 #include <Update.h>
 #include <WiFi.h>
+#include <AsyncUDP.h>
+#include <cstdio>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WiFiUdp.h>
 #include <esp_netif.h>
 #include <cctype>
-#include <cstdio>
 #include <vector>
 #include <esp_ota_ops.h>
 
@@ -1630,6 +1631,241 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
   return true;
 }
 
+// ==== SsdpAdvertiser.h ====
+// UPnP/SSDP advertiser (ESP32SSDP-style) so Fritzbox can store presentationURL
+// and show a clickable web-UI link. PrintSphere/PandaStatusOS do not advertise
+// over SSDP; they rely on DHCP hostname + mDNS. This is an extra signal for AVM.
+class SsdpAdvertiser {
+ public:
+  void configure(const String& friendlyName, const String& uuid);
+  void begin(const String& friendlyName, const String& uuid);
+  void stop();
+  void loop();
+  void setFriendlyName(const String& friendlyName);
+  bool running() const { return running_; }
+  String schemaXml() const;
+
+ private:
+  void sendNotifyAll();
+  void sendNotify(const char* nt);
+  void sendSearchResponse(const IPAddress& addr, uint16_t port, const char* st);
+  void onPacket(AsyncUDPPacket& packet);
+  String locationUrl() const;
+  String usn(const char* st) const;
+
+  AsyncUDP udp_;
+  bool running_ = false;
+  String friendlyName_;
+  String uuid_;
+  unsigned long nextNotifyMs_ = 0;
+  unsigned long startedMs_ = 0;
+};
+
+// ==== SsdpAdvertiser.cpp ====
+namespace {
+constexpr uint16_t kSsdpPort = 1900;
+constexpr uint8_t kSsdpTtl = 2;
+constexpr unsigned long kCacheSeconds = 1800;
+constexpr unsigned long kNotifyFastMs = 60UL * 1000UL;
+constexpr unsigned long kNotifySlowMs = 10UL * 60UL * 1000UL;
+constexpr unsigned long kNotifyFastWindowMs = 5UL * 60UL * 1000UL;
+const IPAddress kSsdpMulticast(239, 255, 255, 250);
+
+bool wantsRoot(const String& st) {
+  return st.equalsIgnoreCase("ssdp:all") || st.equalsIgnoreCase("upnp:rootdevice") ||
+         st.equalsIgnoreCase("urn:schemas-upnp-org:device:Basic:1");
+}
+
+String headerLine(const String& text, const char* key) {
+  String lower = text;
+  lower.toLowerCase();
+  String needle(key);
+  needle.toLowerCase();
+  needle += ":";
+  int found = lower.indexOf(needle);
+  if (found < 0) return "";
+  if (found > 0 && lower[found - 1] != '\n') return "";
+  int colon = found + needle.length() - 1;
+  int end = text.indexOf('\n', colon);
+  if (end < 0) end = text.length();
+  String value = text.substring(colon + 1, end);
+  value.trim();
+  value.replace("\r", "");
+  return value;
+}
+}  // namespace
+
+void SsdpAdvertiser::configure(const String& friendlyName, const String& uuid) {
+  friendlyName_ = friendlyName.length() ? friendlyName : String("BambuStatusBar");
+  uuid_ = uuid;
+  if (!uuid_.isEmpty() && !uuid_.startsWith("uuid:")) uuid_ = String("uuid:") + uuid_;
+}
+
+void SsdpAdvertiser::begin(const String& friendlyName, const String& uuid) {
+  stop();
+  configure(friendlyName, uuid);
+  if (uuid_.isEmpty()) return;
+
+  // TTL=2 matches ESP32SSDP; WiFiUDP multicast often fails to be noticed by AVM.
+  if (!udp_.listenMulticast(kSsdpMulticast, kSsdpPort, kSsdpTtl)) {
+    Serial.println(F("SSDP multicast join failed"));
+    return;
+  }
+  udp_.onPacket([this](AsyncUDPPacket packet) { onPacket(packet); });
+  running_ = true;
+  startedMs_ = millis();
+  nextNotifyMs_ = 0;
+  sendNotifyAll();
+  Serial.print(F("SSDP advertising "));
+  Serial.println(locationUrl());
+}
+
+void SsdpAdvertiser::stop() {
+  running_ = false;
+  udp_.close();
+}
+
+void SsdpAdvertiser::setFriendlyName(const String& friendlyName) {
+  if (friendlyName.length()) friendlyName_ = friendlyName;
+}
+
+void SsdpAdvertiser::loop() {
+  if (!running_) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    stop();
+    return;
+  }
+  if (static_cast<long>(millis() - nextNotifyMs_) >= 0) sendNotifyAll();
+}
+
+String SsdpAdvertiser::locationUrl() const {
+  return String("http://") + WiFi.localIP().toString() + "/description.xml";
+}
+
+String SsdpAdvertiser::usn(const char* st) const {
+  String out = uuid_;
+  if (st && st[0]) {
+    out += "::";
+    out += st;
+  }
+  return out;
+}
+
+String SsdpAdvertiser::schemaXml() const {
+  // Relative presentationURL (ESP32SSDP style); Fritzbox joins it with URLBase.
+  const String name = friendlyName_.length() ? friendlyName_ : String("BambuStatusBar");
+  const String udn = uuid_.length() ? uuid_ : String("uuid:00000000-0000-0000-0000-000000000000");
+  const String ip = WiFi.localIP().toString();
+  const String base = String("http://") + ip + ":80/";
+  String xml;
+  xml.reserve(900);
+  xml += F("<?xml version=\"1.0\"?>\r\n"
+           "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">\r\n"
+           "<specVersion><major>1</major><minor>0</minor></specVersion>\r\n");
+  xml += F("<URLBase>");
+  xml += base;
+  xml += F("</URLBase>\r\n<device>\r\n"
+           "<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>\r\n"
+           "<friendlyName>");
+  xml += name;
+  xml += F("</friendlyName>\r\n"
+           "<manufacturer>Bambu Status Bar</manufacturer>\r\n"
+           "<manufacturerURL>https://github.com/");
+  xml += kGithubOwner;
+  xml += '/';
+  xml += kGithubRepo;
+  xml += F("</manufacturerURL>\r\n"
+           "<modelDescription>LED status bar for Bambu Lab printers</modelDescription>\r\n"
+           "<modelName>Bambu Status Bar</modelName>\r\n"
+           "<modelNumber>");
+  xml += kFirmwareVersion;
+  xml += F("</modelNumber>\r\n"
+           "<modelURL>https://github.com/");
+  xml += kGithubOwner;
+  xml += '/';
+  xml += kGithubRepo;
+  xml += F("</modelURL>\r\n"
+           "<serialNumber>");
+  xml += WiFi.macAddress();
+  xml += F("</serialNumber>\r\n"
+           "<UDN>");
+  xml += udn;
+  xml += F("</UDN>\r\n"
+           "<presentationURL>/</presentationURL>\r\n"
+           "</device>\r\n</root>\r\n");
+  return xml;
+}
+
+void SsdpAdvertiser::sendNotifyAll() {
+  if (!running_ || WiFi.status() != WL_CONNECTED) return;
+  // ESP32SSDP / Windows / AVM expect root + uuid + device-type alive signals.
+  sendNotify("upnp:rootdevice");
+  sendNotify(uuid_.c_str());
+  sendNotify("urn:schemas-upnp-org:device:Basic:1");
+  const unsigned long age = millis() - startedMs_;
+  nextNotifyMs_ = millis() + (age < kNotifyFastWindowMs ? kNotifyFastMs : kNotifySlowMs);
+}
+
+void SsdpAdvertiser::sendNotify(const char* nt) {
+  if (!nt || !nt[0]) return;
+  const String loc = locationUrl();
+  const String ntsUsn = (strncmp(nt, "uuid:", 5) == 0) ? String(nt) : usn(nt);
+  char buf[640];
+  snprintf(buf, sizeof(buf),
+           "NOTIFY * HTTP/1.1\r\n"
+           "HOST: 239.255.255.250:1900\r\n"
+           "CACHE-CONTROL: max-age=%lu\r\n"
+           "LOCATION: %s\r\n"
+           "NT: %s\r\n"
+           "NTS: ssdp:alive\r\n"
+           "SERVER: Arduino/1.0 UPnP/1.1 BambuStatusBar/%s\r\n"
+           "USN: %s\r\n"
+           "\r\n",
+           static_cast<unsigned long>(kCacheSeconds), loc.c_str(), nt, kFirmwareVersion,
+           ntsUsn.c_str());
+  udp_.writeTo(reinterpret_cast<const uint8_t*>(buf), strlen(buf), kSsdpMulticast, kSsdpPort);
+}
+
+void SsdpAdvertiser::sendSearchResponse(const IPAddress& addr, uint16_t port, const char* st) {
+  if (!running_ || WiFi.status() != WL_CONNECTED) return;
+  const String loc = locationUrl();
+  const String responseSt = st && st[0] ? String(st) : String("upnp:rootdevice");
+  const String responseUsn =
+      responseSt.startsWith("uuid:") ? responseSt : usn(responseSt.c_str());
+  char buf[640];
+  snprintf(buf, sizeof(buf),
+           "HTTP/1.1 200 OK\r\n"
+           "CACHE-CONTROL: max-age=%lu\r\n"
+           "EXT:\r\n"
+           "LOCATION: %s\r\n"
+           "SERVER: Arduino/1.0 UPnP/1.1 BambuStatusBar/%s\r\n"
+           "ST: %s\r\n"
+           "USN: %s\r\n"
+           "\r\n",
+           static_cast<unsigned long>(kCacheSeconds), loc.c_str(), kFirmwareVersion,
+           responseSt.c_str(), responseUsn.c_str());
+  udp_.writeTo(reinterpret_cast<const uint8_t*>(buf), strlen(buf), addr, port);
+}
+
+void SsdpAdvertiser::onPacket(AsyncUDPPacket& packet) {
+  if (!running_ || packet.length() == 0) return;
+  const size_t len = packet.length() < 512 ? packet.length() : 512;
+  char raw[513];
+  memcpy(raw, packet.data(), len);
+  raw[len] = 0;
+  String text(raw);
+  if (text.indexOf("M-SEARCH") < 0) return;
+  String st = headerLine(text, "ST");
+  if (st.isEmpty()) return;
+  if (st.equalsIgnoreCase(uuid_)) {
+    sendSearchResponse(packet.remoteIP(), packet.remotePort(), st.c_str());
+    return;
+  }
+  if (!wantsRoot(st)) return;
+  const char* replySt = st.equalsIgnoreCase("ssdp:all") ? "upnp:rootdevice" : st.c_str();
+  sendSearchResponse(packet.remoteIP(), packet.remotePort(), replySt);
+}
+
 // ==== WebPage.h ====
 // Bambu Status Bar web UI: hero, status badges, collapsible sections,
 // amber primary actions. APIs stay local to this Status Bar firmware.
@@ -2285,10 +2521,13 @@ class WebUi {
   void stopAp();
   void syncAp(bool staUp);
   void startMdns();
+  void startSsdp();
+  void stopSsdp();
   void pollWifiConnect();
   void pollWifiScan();
   void pollPrinterScan();
   void notePrinterDatagram(const uint8_t* data, int len);
+  String deviceUuid() const;
 
   void noteActivity() { activity_ = true; }
   void sendJson(int code, const String& body);
@@ -2356,6 +2595,7 @@ struct WebUi::Impl {
   WebServer server{80};
   DNSServer dns;
   WiFiUDP udp;
+  SsdpAdvertiser ssdp;
   std::vector<FoundNet> networks;
   std::vector<FoundPrinter> printers;
 };
@@ -2536,6 +2776,11 @@ void WebUi::begin() {
 
   impl_->server.on("/", HTTP_GET, [this]() { sendPage(); });
   impl_->server.on("/index.html", HTTP_GET, [this]() { sendPage(); });
+  impl_->server.on("/description.xml", HTTP_GET, [this]() {
+    noteActivity();
+    impl_->ssdp.configure(store_.data().hostname, deviceUuid());
+    impl_->server.send(200, "text/xml", impl_->ssdp.schemaXml());
+  });
   impl_->server.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
   impl_->server.on("/api/wifi/scan", HTTP_GET, [this]() { handleWifiScanGet(); });
   impl_->server.on("/api/wifi/scan", HTTP_POST, [this]() { handleWifiScanPost(); });
@@ -2612,7 +2857,13 @@ void WebUi::loop() {
   pollPrinterScan();
   pollWifiConnect();
   if (staConnected_ && !mdnsStarted_) startMdns();
-  if (!staConnected_) mdnsStarted_ = false;
+  if (staConnected_ && !impl_->ssdp.running()) startSsdp();
+  if (!staConnected_) {
+    mdnsStarted_ = false;
+    stopSsdp();
+  } else {
+    impl_->ssdp.loop();
+  }
   syncAp(staConnected_);
 }
 
@@ -2730,12 +2981,39 @@ void WebUi::syncAp(bool staUp) {
 }
 
 void WebUi::startMdns() {
-  if (!MDNS.begin(store_.data().hostname.c_str())) return;
+  // Match PandaStatusOS: advertise the DHCP-safe label (no underscores) as both
+  // hostname and instance, with _http._tcp on port 80.
+  const String host = dhcpHostname();
+  if (!MDNS.begin(host.c_str())) return;
+  MDNS.setInstanceName(host.c_str());
   MDNS.addService("http", "tcp", 80);
   mdnsStarted_ = true;
   Serial.print(F("mDNS http://"));
-  Serial.print(store_.data().hostname);
+  Serial.print(host);
   Serial.println(F(".local"));
+}
+
+String WebUi::deviceUuid() const {
+  // Stable UPnP UDN from the STA MAC (same form many ESP SSDP examples use).
+  uint8_t mac[6] = {0};
+  WiFi.macAddress(mac);
+  char buf[40];
+  snprintf(buf, sizeof(buf), "38323636-4558-4dda-9188-cda0e6%02x%02x%02x", mac[3], mac[4],
+           mac[5]);
+  return String(buf);
+}
+
+void WebUi::startSsdp() {
+  if (!impl_ || !staConnected_) return;
+  // Friendly name can keep underscores for the Fritzbox label; UUID is MAC-derived.
+  String name = store_.data().hostname;
+  if (name.isEmpty()) name = dhcpHostname();
+  impl_->ssdp.begin(name, deviceUuid());
+}
+
+void WebUi::stopSsdp() {
+  if (!impl_) return;
+  impl_->ssdp.stop();
 }
 
 void WebUi::pollWifiConnect() {

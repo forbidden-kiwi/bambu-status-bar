@@ -44,10 +44,13 @@ class WebUi {
   void stopAp();
   void syncAp(bool staUp);
   void startMdns();
+  void startSsdp();
+  void stopSsdp();
   void pollWifiConnect();
   void pollWifiScan();
   void pollPrinterScan();
   void notePrinterDatagram(const uint8_t* data, int len);
+  String deviceUuid() const;
 
   void noteActivity() { activity_ = true; }
   void sendJson(int code, const String& body);

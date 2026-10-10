@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "GithubOta.h"
+#include "SsdpAdvertiser.h"
 #include "WebPage.h"
 
 #include <DNSServer.h>
@@ -21,6 +22,7 @@ struct WebUi::Impl {
   WebServer server{80};
   DNSServer dns;
   WiFiUDP udp;
+  SsdpAdvertiser ssdp;
   std::vector<FoundNet> networks;
   std::vector<FoundPrinter> printers;
 };
@@ -201,6 +203,11 @@ void WebUi::begin() {
 
   impl_->server.on("/", HTTP_GET, [this]() { sendPage(); });
   impl_->server.on("/index.html", HTTP_GET, [this]() { sendPage(); });
+  impl_->server.on("/description.xml", HTTP_GET, [this]() {
+    noteActivity();
+    impl_->ssdp.configure(store_.data().hostname, deviceUuid());
+    impl_->server.send(200, "text/xml", impl_->ssdp.schemaXml());
+  });
   impl_->server.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
   impl_->server.on("/api/wifi/scan", HTTP_GET, [this]() { handleWifiScanGet(); });
   impl_->server.on("/api/wifi/scan", HTTP_POST, [this]() { handleWifiScanPost(); });
@@ -277,7 +284,13 @@ void WebUi::loop() {
   pollPrinterScan();
   pollWifiConnect();
   if (staConnected_ && !mdnsStarted_) startMdns();
-  if (!staConnected_) mdnsStarted_ = false;
+  if (staConnected_ && !impl_->ssdp.running()) startSsdp();
+  if (!staConnected_) {
+    mdnsStarted_ = false;
+    stopSsdp();
+  } else {
+    impl_->ssdp.loop();
+  }
   syncAp(staConnected_);
 }
 
@@ -395,12 +408,39 @@ void WebUi::syncAp(bool staUp) {
 }
 
 void WebUi::startMdns() {
-  if (!MDNS.begin(store_.data().hostname.c_str())) return;
+  // Match PandaStatusOS: advertise the DHCP-safe label (no underscores) as both
+  // hostname and instance, with _http._tcp on port 80.
+  const String host = dhcpHostname();
+  if (!MDNS.begin(host.c_str())) return;
+  MDNS.setInstanceName(host.c_str());
   MDNS.addService("http", "tcp", 80);
   mdnsStarted_ = true;
   Serial.print(F("mDNS http://"));
-  Serial.print(store_.data().hostname);
+  Serial.print(host);
   Serial.println(F(".local"));
+}
+
+String WebUi::deviceUuid() const {
+  // Stable UPnP UDN from the STA MAC (same form many ESP SSDP examples use).
+  uint8_t mac[6] = {0};
+  WiFi.macAddress(mac);
+  char buf[40];
+  snprintf(buf, sizeof(buf), "38323636-4558-4dda-9188-cda0e6%02x%02x%02x", mac[3], mac[4],
+           mac[5]);
+  return String(buf);
+}
+
+void WebUi::startSsdp() {
+  if (!impl_ || !staConnected_) return;
+  // Friendly name can keep underscores for the Fritzbox label; UUID is MAC-derived.
+  String name = store_.data().hostname;
+  if (name.isEmpty()) name = dhcpHostname();
+  impl_->ssdp.begin(name, deviceUuid());
+}
+
+void WebUi::stopSsdp() {
+  if (!impl_) return;
+  impl_->ssdp.stop();
 }
 
 void WebUi::pollWifiConnect() {

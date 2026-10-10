@@ -36,6 +36,8 @@ FILE_ORDER = [
     "Settings.cpp",
     "GithubOta.h",
     "GithubOta.cpp",
+    "SsdpAdvertiser.h",
+    "SsdpAdvertiser.cpp",
     "WebPage.h",
     "WebUi.h",
     "WebUi.cpp",
