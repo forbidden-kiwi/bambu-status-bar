@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "Config.h"
 #include "LedEffects.h"
 
 // Color + animation for one user-facing LED status.
@@ -17,19 +18,23 @@ struct LightSlot {
 struct DeviceSettings {
   String wifiSsid;
   String wifiPass;
-  String hostname = "BambuStatusBar";
+  String hostname = kDefaultHostname;
 
   String printerIp;
   String printerSerial;
   String accessCode;
 
-  String apSsid = "BambuStatusBar";
-  String apPass = "987654321";
-  String apIp = "192.168.254.1";
+  String apSsid = kDefaultApSsid;
+  String apPass = kDefaultApPass;
+  String apIp = kDefaultApIp;
   bool apEnabled = true;
 
-  uint8_t brightness = 50;  // 0..100, H2D default is 50%
-  uint8_t speed = 50;       // 1..100, 50 is 1x
+  uint8_t brightness = led_cfg::kDefaultBrightnessPercent;  // 0..100
+  uint8_t speed = led_cfg::kDefaultSpeedPercent;            // 1..100, 50 is 1x
+
+  // Hardware for the WS2812 bar. Changing pin/count requires a reboot.
+  uint8_t ledPin = hw::kDefaultDataPin;
+  uint16_t ledCount = hw::kDefaultNumLeds;
 
   // Defaults match the previous hard-coded LED look for each phase.
   LightSlot idle{255, 255, 255, LedEffect::Pulse};

@@ -25,6 +25,7 @@ OUTPUT = FIRMWARE_DIR / "arduino-ide" / "BambuStatusBar" / "BambuStatusBar.ino"
 # the result is one translation unit read top to bottom.
 FILE_ORDER = [
     "Config.h",
+    "NetHelpers.h",
     "PrinterState.h",
     "PrinterState.cpp",
     "LedEffects.h",

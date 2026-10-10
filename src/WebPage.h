@@ -138,7 +138,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
   <div class="section-body">
     <div class="actions">
       <button type="button" class="secondary" id="printerScan" data-i="printer_scan">Scan Printers</button>
-      <div class="micro" id="printerScanDetail" data-i="printer_scan_hint">SSDP search on the LAN. Needs Wi-Fi first.</div>
+      <div class="micro" id="printerScanDetail" data-i="printer_scan_hint">Listens ~12 s for Bambu NOTIFY broadcasts (UDP 2021). Needs Wi-Fi first.</div>
     </div>
     <div id="printerList"></div>
     <div class="grid-2">
@@ -166,6 +166,11 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
       <div class="field"><label for="brightness"><span data-i="light_brightness">Brightness</span> <span id="briVal"></span></label><input id="brightness" type="range" min="0" max="100" value="50"></div>
       <div class="field"><label for="speed"><span data-i="light_speed">Speed</span> <span id="spdVal"></span></label><input id="speed" type="range" min="1" max="100" value="50"></div>
     </div>
+    <div class="grid-2">
+      <div class="field"><label for="ledPin" data-i="light_pin">LED data pin (GPIO)</label><input id="ledPin" type="number" min="0" max="48" step="1" value="19"></div>
+      <div class="field"><label for="ledCount" data-i="light_count">LED count</label><input id="ledCount" type="number" min="1" max="64" step="1" value="18"></div>
+    </div>
+    <p class="micro" data-i="light_hw_hint">Pin or count changes reboot the device so FastLED can re-init.</p>
     <label class="check"><input id="ledReverse" type="checkbox"> <span data-i="light_reverse">Reverse LED direction</span></label>
     <div class="light-rows" id="lightStates"></div>
     <div class="actions"><button type="button" class="secondary" id="lightReset" data-i="light_reset">Reset Colors</button></div>
@@ -268,6 +273,8 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"LED-Richtung umkehren",
+light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
+light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
 fx_pulse:"Atmen",fx_solid:"Fest",fx_comet:"Komet",fx_wave:"Welle",fx_strobe:"Blinken",fx_progress:"Fortschritt",
 fx_rainbow:"Regenbogen",fx_sparkle:"Funkeln",fx_fire:"Feuer",
 light_reset:"Farben & Animationen zurücksetzen",light_hint:"Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig bleibt 15 Minuten, danach Leerlauf.",
@@ -286,6 +293,9 @@ ota_checking:"Prüfe GitHub…",ota_installing:"Lade Firmware und flashe…",
 err_no_wifi:"Zuerst mit Wi-Fi verbinden",err_no_release:"Kein Release gefunden",err_no_asset:"Kein firmware.bin im Release",
 err_http_begin:"Verbindung fehlgeschlagen",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
 err_short_write:"Download unvollständig",err_bad_version:"Versionsformat ungültig",err_bad_json:"Ungültige Antwort",
+err_bad_request:"Ungültige Anfrage",err_bad_lang:"Sprache ungültig",err_udp_bind:"UDP-Bind fehlgeschlagen",
+err_ota_busy:"OTA läuft bereits",err_bad_url:"URL ungültig",err_not_found:"Nicht gefunden",
+err_bad_led_pin:"GPIO-Pin nicht unterstützt",err_bad_led_count:"LED-Anzahl ungültig",
 sec_device:"Device",sec_device_desc:"Sprache und Werkseinstellungen.",pill_device:"Device",lang:"Sprache",
 factory:"Werkseinstellungen",boot_hint:"Oder BOOT am laufenden Gerät 3 Sekunden halten.",
 wifi_on:"Verbunden",wifi_off:"Nicht verbunden",wifi_try:"Verbinde…",wifi_fail:"Wi-Fi fehlgeschlagen",
@@ -297,7 +307,7 @@ state_provisioning:"Nicht eingerichtet",state_wifi:"Suche Wi-Fi",state_mqtt:"Ver
 state_idle:"Leerlauf",state_homing:"Referenzfahrt",state_leveling:"Nivellieren",state_preparing:"Vorbereitung",
 state_downloading:"Download",state_heating:"Heizen",state_printing:"Druck",state_paused:"Pause",
 state_finished:"Fertig",state_error:"Fehler",state_standby:"Standby",state_unknown:"—",
-err_bad_ssid:"SSID ungültig",err_bad_pass:"Passwort ungültig",err_bad_json:"Ungültige Eingabe",
+err_bad_ssid:"SSID ungültig",err_bad_pass:"Passwort ungültig",
 err_ap_pass:"Hotspot-Passwort: leer oder ≥ 8 Zeichen",err_bad_ip:"IP ungültig",
 err_bad_host:"Hostname: Buchstaben, Zahlen, Bindestrich oder Unterstrich",err_bad_printer:"Druckerdaten ungültig",
 err_bad_leds:"Lichtwerte ungültig"
@@ -326,6 +336,8 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"Reverse LED direction",
+light_pin:"LED data pin (GPIO)",light_count:"LED count",
+light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
 fx_pulse:"Pulse",fx_solid:"Solid",fx_comet:"Comet",fx_wave:"Wave",fx_strobe:"Strobe",fx_progress:"Progress",
 fx_rainbow:"Rainbow",fx_sparkle:"Sparkle",fx_fire:"Fire",
 light_reset:"Reset colors & animations",light_hint:"Color and animation per status. Brightness and speed apply to all. Finished stays for 15 minutes, then idle.",
@@ -344,6 +356,9 @@ ota_checking:"Checking GitHub…",ota_installing:"Downloading and flashing…",
 err_no_wifi:"Connect to Wi-Fi first",err_no_release:"No release found",err_no_asset:"No firmware.bin in release",
 err_http_begin:"Connection failed",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
 err_short_write:"Incomplete download",err_bad_version:"Invalid version format",err_bad_json:"Invalid response",
+err_bad_request:"Invalid request",err_bad_lang:"Invalid language",err_udp_bind:"UDP bind failed",
+err_ota_busy:"OTA already in progress",err_bad_url:"Invalid URL",err_not_found:"Not found",
+err_bad_led_pin:"GPIO pin not supported",err_bad_led_count:"Invalid LED count",
 sec_device:"Device",sec_device_desc:"Language and factory reset.",pill_device:"Device",lang:"Language",
 factory:"Factory Reset",boot_hint:"Or hold BOOT for 3 seconds while the device is already running.",
 wifi_on:"Connected",wifi_off:"Not connected",wifi_try:"Connecting…",wifi_fail:"Wi-Fi failed",
@@ -355,7 +370,7 @@ state_provisioning:"Not set up",state_wifi:"Joining Wi-Fi",state_mqtt:"Connectin
 state_idle:"Idle",state_homing:"Homing",state_leveling:"Leveling",state_preparing:"Preparing",
 state_downloading:"Downloading",state_heating:"Heating",state_printing:"Printing",state_paused:"Paused",
 state_finished:"Finished",state_error:"Error",state_standby:"Standby",state_unknown:"—",
-err_bad_ssid:"Invalid SSID",err_bad_pass:"Invalid password",err_bad_json:"Invalid input",
+err_bad_ssid:"Invalid SSID",err_bad_pass:"Invalid password",
 err_ap_pass:"Hotspot password: empty or ≥ 8 characters",err_bad_ip:"Invalid IP",
 err_bad_host:"Hostname: letters, digits, hyphen or underscore",err_bad_printer:"Invalid printer details",
 err_bad_leds:"Invalid light values"
@@ -464,6 +479,11 @@ function applyStatus(data){
     setIdle(s.key+'Effect', leds[s.key+'Effect']||def.fx);
   });
   setIdle("ledReverse", !!leds.reverse);
+  if(document.activeElement!==$("ledPin")) $("ledPin").value=leds.pin??19;
+  if(document.activeElement!==$("ledCount")){
+    $("ledCount").max=leds.maxCount||64;
+    $("ledCount").value=leds.count??18;
+  }
   $("briVal").textContent=$("brightness").value+"%";
   $("spdVal").textContent=$("speed").value+"%";
   setIdle("apEnabled", !!ap.enabled);
@@ -518,10 +538,19 @@ function renderPrinters(data){
 function scheduleLeds(){clearTimeout(ledTimer);ledTimer=setTimeout(saveLeds,250)}
 async function saveLeds(){
   buildLightRows();
-  const body={brightness:Number($("brightness").value),speed:Number($("speed").value),reverse:$("ledReverse").checked};
+  const body={
+    brightness:Number($("brightness").value),
+    speed:Number($("speed").value),
+    reverse:$("ledReverse").checked,
+    pin:Number($("ledPin").value),
+    count:Number($("ledCount").value)
+  };
   LIGHT_SLOTS.forEach(s=>{ body[s.key]=$(s.key+'Color').value; body[s.key+'Effect']=$(s.key+'Effect').value; });
-  try{await api("/api/leds",body);setStatus(t("saved"),"")}
-  catch(e){setStatus(errText(e.message),"")}
+  try{
+    const d=await api("/api/leds",body);
+    setStatus(d.reboot?t("rebooting"):t("saved"),"");
+    if(d.reboot)clearInterval(pollTimer);
+  }catch(e){setStatus(errText(e.message),"")}
 }
 $("wifiSelect").onchange=()=>{if($("wifiSelect").value) $("ssid").value=$("wifiSelect").value};
 $("wifiScan").onclick=async()=>{
@@ -549,6 +578,7 @@ $("bindBtn").onclick=async()=>{
 ["brightness","speed"].forEach(id=>{
   $(id).addEventListener("input",()=>{$("briVal").textContent=$("brightness").value+"%";$("spdVal").textContent=$("speed").value+"%";scheduleLeds()});
 });
+["ledPin","ledCount"].forEach(id=>$(id).addEventListener("change",scheduleLeds));
 $("ledReverse").addEventListener("change",scheduleLeds);
 $("lightReset").onclick=async()=>{try{await api("/api/leds/reset",{});setStatus(t("saved"),"");refresh()}catch(e){setStatus(errText(e.message),"")}};
 buildLightRows();

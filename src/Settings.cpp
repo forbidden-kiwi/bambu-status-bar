@@ -31,16 +31,18 @@ void SettingsStore::begin() {
   prefs.begin(kNs, /*readOnly=*/true);
   data_.wifiSsid = prefs.getString("wssid", "");
   data_.wifiPass = prefs.getString("wpass", "");
-  data_.hostname = prefs.getString("host", "BambuStatusBar");
+  data_.hostname = prefs.getString("host", kDefaultHostname);
   data_.printerIp = prefs.getString("ip", "");
   data_.printerSerial = prefs.getString("serial", "");
   data_.accessCode = prefs.getString("code", "");
-  data_.apSsid = prefs.getString("apssid", "BambuStatusBar");
-  data_.apPass = prefs.getString("appass", "987654321");
-  data_.apIp = prefs.getString("apip", "192.168.254.1");
+  data_.apSsid = prefs.getString("apssid", kDefaultApSsid);
+  data_.apPass = prefs.getString("appass", kDefaultApPass);
+  data_.apIp = prefs.getString("apip", kDefaultApIp);
   data_.apEnabled = prefs.getUChar("apen", 1) != 0;
-  data_.brightness = prefs.getUChar("bri", 50);
-  data_.speed = prefs.getUChar("spd", 50);
+  data_.brightness = prefs.getUChar("bri", led_cfg::kDefaultBrightnessPercent);
+  data_.speed = prefs.getUChar("spd", led_cfg::kDefaultSpeedPercent);
+  data_.ledPin = prefs.getUChar("ledpin", hw::kDefaultDataPin);
+  data_.ledCount = prefs.getUShort("ledcnt", hw::kDefaultNumLeds);
 
   loadSlot(prefs, data_.idle, "ir", "ig", "ib", "idlefx", 255, 255, 255, LedEffect::Pulse);
   loadSlot(prefs, data_.printing, "pr", "pg", "pb", "printfx", 255, 255, 255, LedEffect::Progress);
@@ -61,13 +63,16 @@ void SettingsStore::begin() {
 }
 
 void SettingsStore::clamp() {
-  if (data_.hostname.isEmpty()) data_.hostname = "BambuStatusBar";
-  if (data_.apSsid.isEmpty()) data_.apSsid = "BambuStatusBar";
-  if (data_.apPass.isEmpty()) data_.apPass = "987654321";
-  if (data_.apIp.isEmpty()) data_.apIp = "192.168.254.1";
+  if (data_.hostname.isEmpty()) data_.hostname = kDefaultHostname;
+  if (data_.apSsid.isEmpty()) data_.apSsid = kDefaultApSsid;
+  if (data_.apPass.isEmpty()) data_.apPass = kDefaultApPass;
+  if (data_.apIp.isEmpty()) data_.apIp = kDefaultApIp;
   if (data_.brightness > 100) data_.brightness = 100;
   if (data_.speed < 1) data_.speed = 1;
   if (data_.speed > 100) data_.speed = 100;
+  if (!hw::isSupportedLedDataPin(data_.ledPin)) data_.ledPin = hw::kDefaultDataPin;
+  if (data_.ledCount < 1) data_.ledCount = 1;
+  if (data_.ledCount > hw::kMaxNumLeds) data_.ledCount = hw::kMaxNumLeds;
   clampSlot(data_.idle, LedEffect::Pulse);
   clampSlot(data_.printing, LedEffect::Progress);
   clampSlot(data_.error, LedEffect::Strobe);
@@ -97,6 +102,8 @@ void SettingsStore::save() {
   prefs.putUChar("apen", data_.apEnabled ? 1 : 0);
   prefs.putUChar("bri", data_.brightness);
   prefs.putUChar("spd", data_.speed);
+  prefs.putUChar("ledpin", data_.ledPin);
+  prefs.putUShort("ledcnt", data_.ledCount);
   saveSlot(prefs, data_.idle, "ir", "ig", "ib", "idlefx");
   saveSlot(prefs, data_.printing, "pr", "pg", "pb", "printfx");
   saveSlot(prefs, data_.error, "er", "eg", "eb", "errorfx");
@@ -123,8 +130,8 @@ void SettingsStore::clear() {
 }
 
 void SettingsStore::resetLights() {
-  data_.brightness = 50;
-  data_.speed = 50;
+  data_.brightness = led_cfg::kDefaultBrightnessPercent;
+  data_.speed = led_cfg::kDefaultSpeedPercent;
   data_.idle = LightSlot{255, 255, 255, LedEffect::Pulse};
   data_.printing = LightSlot{255, 255, 255, LedEffect::Progress};
   data_.error = LightSlot{255, 0, 0, LedEffect::Strobe};

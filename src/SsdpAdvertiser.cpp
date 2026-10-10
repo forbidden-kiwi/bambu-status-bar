@@ -1,6 +1,7 @@
 #include "SsdpAdvertiser.h"
 
 #include "Config.h"
+#include "NetHelpers.h"
 
 #include <WiFi.h>
 #include <cstdio>
@@ -19,28 +20,10 @@ bool wantsRoot(const String& st) {
   return st.equalsIgnoreCase("ssdp:all") || st.equalsIgnoreCase("upnp:rootdevice") ||
          st.equalsIgnoreCase("urn:schemas-upnp-org:device:Basic:1");
 }
-
-String headerLine(const String& text, const char* key) {
-  String lower = text;
-  lower.toLowerCase();
-  String needle(key);
-  needle.toLowerCase();
-  needle += ":";
-  int found = lower.indexOf(needle);
-  if (found < 0) return "";
-  if (found > 0 && lower[found - 1] != '\n') return "";
-  int colon = found + needle.length() - 1;
-  int end = text.indexOf('\n', colon);
-  if (end < 0) end = text.length();
-  String value = text.substring(colon + 1, end);
-  value.trim();
-  value.replace("\r", "");
-  return value;
-}
 }  // namespace
 
 void SsdpAdvertiser::configure(const String& friendlyName, const String& uuid) {
-  friendlyName_ = friendlyName.length() ? friendlyName : String("BambuStatusBar");
+  friendlyName_ = friendlyName.length() ? friendlyName : String(kDefaultHostname);
   uuid_ = uuid;
   if (!uuid_.isEmpty() && !uuid_.startsWith("uuid:")) uuid_ = String("uuid:") + uuid_;
 }
@@ -65,6 +48,7 @@ void SsdpAdvertiser::begin(const String& friendlyName, const String& uuid) {
 }
 
 void SsdpAdvertiser::stop() {
+  if (!running_) return;
   running_ = false;
   udp_.close();
 }
@@ -97,7 +81,7 @@ String SsdpAdvertiser::usn(const char* st) const {
 
 String SsdpAdvertiser::schemaXml() const {
   // Relative presentationURL (ESP32SSDP style); Fritzbox joins it with URLBase.
-  const String name = friendlyName_.length() ? friendlyName_ : String("BambuStatusBar");
+  const String name = friendlyName_.length() ? friendlyName_ : String(kDefaultHostname);
   const String udn = uuid_.length() ? uuid_ : String("uuid:00000000-0000-0000-0000-000000000000");
   const String ip = WiFi.localIP().toString();
   const String base = String("http://") + ip + ":80/";
@@ -199,7 +183,7 @@ void SsdpAdvertiser::onPacket(AsyncUDPPacket& packet) {
   raw[len] = 0;
   String text(raw);
   if (text.indexOf("M-SEARCH") < 0) return;
-  String st = headerLine(text, "ST");
+  String st = httpHeaderValue(text, "ST");
   if (st.isEmpty()) return;
   if (st.equalsIgnoreCase(uuid_)) {
     sendSearchResponse(packet.remoteIP(), packet.remotePort(), st.c_str());

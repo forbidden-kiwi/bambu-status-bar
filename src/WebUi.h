@@ -81,6 +81,7 @@ class WebUi {
   bool apRunning_ = false;
   int apChannel_ = 1;
   bool mdnsStarted_ = false;
+  unsigned long mdnsRetryAt_ = 0;
 
   bool channelAligned_ = false;
   bool connectArmed_ = false;

@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "GithubOta.h"
+#include "NetHelpers.h"
 #include "SsdpAdvertiser.h"
 #include "WebPage.h"
 
@@ -80,9 +81,8 @@ bool validHostname(const char* text) {
   if (text[0] == '-' || text[0] == '_' || text[n - 1] == '-' || text[n - 1] == '_') return false;
   for (size_t i = 0; i < n; i++) {
     unsigned char c = static_cast<unsigned char>(text[i]);
-    // Underscores are not classic DNS labels, but Fritzbox and many routers
-    // accept them in the DHCP client hostname — users expect names like
-    // Panda_Status_A1_Mini.
+    // Underscores are allowed in the stored name; dhcpHostname() maps them to
+    // hyphens for the wire (Fritzbox-safe).
     if (!isalnum(c) && c != '-' && c != '_') return false;
   }
   return true;
@@ -148,42 +148,12 @@ bool parseColor(const char* text, uint8_t& r, uint8_t& g, uint8_t& b) {
   return true;
 }
 
-String headerValue(const String& text, const char* key) {
-  String lower = text;
-  lower.toLowerCase();
-  String needle(key);
-  needle.toLowerCase();
-  needle += ":";
-  int at = 0;
-  while (at >= 0 && at < lower.length()) {
-    int found = lower.indexOf(needle, at);
-    if (found < 0) return "";
-    // Match only at the start of a line so "DevName.bambu.com" does not hit
-    // a substring of another header.
-    if (found == 0 || lower[found - 1] == '\n') {
-      int colon = found + needle.length() - 1;
-      int end = text.indexOf('\n', colon);
-      if (end < 0) end = text.length();
-      String value = text.substring(colon + 1, end);
-      value.trim();
-      value.replace("\r", "");
-      return value;
-    }
-    at = found + 1;
-  }
-  return "";
-}
 }  // namespace
 
 void WebUi::begin() {
   static Impl storage;
   impl_ = &storage;
   store_.begin();
-
-  if (store_.data().apSsid.isEmpty()) {
-    store_.data().apSsid = "BambuStatusBar";
-    store_.save();
-  }
 
   WiFi.persistent(false);
   WiFi.setSleep(false);
@@ -283,13 +253,17 @@ void WebUi::loop() {
   pollWifiScan();
   pollPrinterScan();
   pollWifiConnect();
-  if (staConnected_ && !mdnsStarted_) startMdns();
-  if (staConnected_ && !impl_->ssdp.running()) startSsdp();
-  if (!staConnected_) {
-    mdnsStarted_ = false;
-    stopSsdp();
-  } else {
+  if (staConnected_) {
+    if (!mdnsStarted_ && static_cast<long>(millis() - mdnsRetryAt_) >= 0) startMdns();
+    if (!impl_->ssdp.running()) startSsdp();
     impl_->ssdp.loop();
+  } else {
+    if (mdnsStarted_) {
+      MDNS.end();
+      mdnsStarted_ = false;
+    }
+    mdnsRetryAt_ = 0;
+    stopSsdp();
   }
   syncAp(staConnected_);
 }
@@ -319,11 +293,11 @@ String WebUi::dhcpHostname() const {
   // underscores. Keep the stored name readable, but put a DNS/DHCP-safe form
   // on the wire (underscore -> hyphen).
   String wire = store_.data().hostname;
-  if (wire.isEmpty()) wire = "BambuStatusBar";
+  if (wire.isEmpty()) wire = kDefaultHostname;
   wire.replace('_', '-');
   if (wire.length() > 31) wire = wire.substring(0, 31);
   while (wire.endsWith("-")) wire.remove(wire.length() - 1);
-  if (wire.isEmpty()) wire = "BambuStatusBar";
+  if (wire.isEmpty()) wire = kDefaultHostname;
   return wire;
 }
 
@@ -408,13 +382,17 @@ void WebUi::syncAp(bool staUp) {
 }
 
 void WebUi::startMdns() {
-  // Match PandaStatusOS: advertise the DHCP-safe label (no underscores) as both
-  // hostname and instance, with _http._tcp on port 80.
+  // Advertise the DHCP-safe label (no underscores) as hostname and instance,
+  // with _http._tcp on port 80.
   const String host = dhcpHostname();
-  if (!MDNS.begin(host.c_str())) return;
+  if (!MDNS.begin(host.c_str())) {
+    mdnsRetryAt_ = millis() + 5000;
+    return;
+  }
   MDNS.setInstanceName(host.c_str());
   MDNS.addService("http", "tcp", 80);
   mdnsStarted_ = true;
+  mdnsRetryAt_ = 0;
   Serial.print(F("mDNS http://"));
   Serial.print(host);
   Serial.println(F(".local"));
@@ -551,7 +529,7 @@ void WebUi::notePrinterDatagram(const uint8_t* data, int len) {
     return;
   }
 
-  String ip = headerValue(text, "location");
+  String ip = httpHeaderValue(text, "location");
   ip.trim();
   IPAddress parsed;
   if (!parseIpv4(ip, parsed)) {
@@ -564,7 +542,7 @@ void WebUi::notePrinterDatagram(const uint8_t* data, int len) {
   }
   if (ip.isEmpty()) return;
 
-  String serial = headerValue(text, "usn");
+  String serial = httpHeaderValue(text, "usn");
   int sep = serial.indexOf("::");
   if (sep >= 0) serial = serial.substring(0, sep);
   serial.replace("uuid:", "");
@@ -575,9 +553,9 @@ void WebUi::notePrinterDatagram(const uint8_t* data, int len) {
     serial = "";
   }
 
-  String name = headerValue(text, "DevName.bambu.com");
-  if (name.isEmpty()) name = headerValue(text, "devname.bambu.com");
-  if (name.isEmpty()) name = headerValue(text, "devname");
+  String name = httpHeaderValue(text, "DevName.bambu.com");
+  if (name.isEmpty()) name = httpHeaderValue(text, "devname.bambu.com");
+  if (name.isEmpty()) name = httpHeaderValue(text, "devname");
 
   for (auto& existing : impl_->printers) {
     if (existing.ip == ip || (!serial.isEmpty() && existing.serial == serial)) {
@@ -672,6 +650,9 @@ void WebUi::handleStatus() {
   };
   leds["brightness"] = cfg.brightness;
   leds["speed"] = cfg.speed;
+  leds["pin"] = cfg.ledPin;
+  leds["count"] = cfg.ledCount;
+  leds["maxCount"] = hw::kMaxNumLeds;
   putSlot("idle", "idleEffect", cfg.idle);
   putSlot("print", "printEffect", cfg.printing);
   putSlot("error", "errorEffect", cfg.error);
@@ -755,11 +736,9 @@ void WebUi::handleHostname() {
     sendError(400, "bad-host");
     return;
   }
-  // Persist the DHCP-safe form so the UI and Fritzbox show the same name.
-  String wire = hostname;
-  wire.replace('_', '-');
-  store_.data().hostname = wire;
+  store_.data().hostname = hostname;
   store_.save();
+  // Persist raw name; dhcpHostname() sanitizes for the wire after reboot.
   sendOk(true);
   delay(250);
   ESP.restart();
@@ -796,7 +775,7 @@ void WebUi::handlePrinterScanPost() {
     bool bound = impl_->udp.begin(WiFi.localIP(), 2021);
     if (!bound) bound = impl_->udp.begin(2021);
     if (!bound) {
-      sendError(500, "bad-json");
+      sendError(500, "udp-bind");
       return;
     }
     printerScanRunning_ = true;
@@ -835,6 +814,18 @@ void WebUi::handleLeds() {
   int speed = doc["speed"].as<int>();
   if (brightness < 0 || brightness > 100 || speed < 1 || speed > 100) {
     sendError(400, "bad-leds");
+    return;
+  }
+  const bool hasPin = doc["pin"].is<int>();
+  const bool hasCount = doc["count"].is<int>();
+  int pin = hasPin ? doc["pin"].as<int>() : store_.data().ledPin;
+  int count = hasCount ? doc["count"].as<int>() : store_.data().ledCount;
+  if (hasPin && (pin < 0 || pin > 255 || !hw::isSupportedLedDataPin(static_cast<uint8_t>(pin)))) {
+    sendError(400, "bad-led-pin");
+    return;
+  }
+  if (hasCount && (count < 1 || count > static_cast<int>(hw::kMaxNumLeds))) {
+    sendError(400, "bad-led-count");
     return;
   }
 
@@ -882,7 +873,18 @@ void WebUi::handleLeds() {
   cfg.paused = paused;
   cfg.finished = finished;
   cfg.ledReverse = doc["reverse"].as<bool>();
+  const bool hwChanged =
+      (hasPin && static_cast<uint8_t>(pin) != cfg.ledPin) ||
+      (hasCount && static_cast<uint16_t>(count) != cfg.ledCount);
+  if (hasPin) cfg.ledPin = static_cast<uint8_t>(pin);
+  if (hasCount) cfg.ledCount = static_cast<uint16_t>(count);
   store_.save();
+  if (hwChanged) {
+    sendOk(true);
+    delay(250);
+    ESP.restart();
+    return;
+  }
   sendOk(false);
 }
 
@@ -897,7 +899,7 @@ void WebUi::handleAp() {
   JsonDocument doc;
   if (!readJson(doc)) return;
   if (!doc["enabled"].is<bool>()) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-request");
     return;
   }
   const char* ssid = doc["ssid"] | "";
@@ -933,7 +935,7 @@ void WebUi::handleLanguage() {
   if (!readJson(doc)) return;
   const char* language = doc["language"] | "";
   if (strcmp(language, "de") != 0 && strcmp(language, "en") != 0) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-lang");
     return;
   }
   store_.data().language = language;
@@ -959,26 +961,26 @@ void WebUi::handleUpdateCheck() {
   if (!info.error.isEmpty()) doc["error"] = info.error;
   String body;
   serializeJson(doc, body);
-  sendJson(info.ok || info.error == "no-wifi" || info.error == "no-release" ? 200 : 200, body);
+  sendJson(200, body);
 }
 
 void WebUi::handleUpdateGithub() {
   noteActivity();
   if (otaBusy_) {
-    sendError(409, "bad-json");
+    sendError(409, "ota-busy");
     return;
   }
   JsonDocument doc;
   if (!readJson(doc)) return;
   const char* url = doc["url"] | "";
   if (!url[0] || strncmp(url, "https://", 8) != 0) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-url");
     return;
   }
   // Only allow GitHub download hosts.
   String urlStr = url;
   if (urlStr.indexOf("github.com/") < 0 && urlStr.indexOf("githubusercontent.com/") < 0) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-url");
     return;
   }
 
@@ -999,7 +1001,7 @@ void WebUi::handleUpdateGithub() {
 void WebUi::handleNotFound() {
   String uri = impl_->server.uri();
   if (uri.startsWith("/api/")) {
-    sendError(404, "bad-json");
+    sendError(404, "not-found");
     return;
   }
   if (!apRunning_) {

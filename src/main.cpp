@@ -116,8 +116,8 @@ void setup() {
   delay(200);
   pinMode(hw::kResetButtonPin, INPUT_PULLUP);
 
-  ledController.begin();
   web.begin();
+  ledController.begin(web.settings().ledPin, web.settings().ledCount);
   web.onOtaStart([]() { mqttClient.disconnect(); });
   esp_ota_mark_app_valid_cancel_rollback();
 

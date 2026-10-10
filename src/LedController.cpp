@@ -7,8 +7,67 @@ uint8_t brightnessToPwm(uint8_t percent) {
 }
 }  // namespace
 
-void LedController::begin() {
-  FastLED.addLeds<WS2812B, hw::kDataPin, GRB>(leds_, hw::kNumLeds);
+bool LedController::addLedsForPin(uint8_t pin) {
+#define LED_PIN_CASE(p)                              \
+  case p:                                            \
+    FastLED.addLeds<WS2812B, p, GRB>(leds_, count_); \
+    return true
+  switch (pin) {
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+    LED_PIN_CASE(0);
+    LED_PIN_CASE(1);
+    LED_PIN_CASE(2);
+    LED_PIN_CASE(3);
+    LED_PIN_CASE(4);
+    LED_PIN_CASE(5);
+    LED_PIN_CASE(6);
+    LED_PIN_CASE(7);
+    LED_PIN_CASE(8);
+    LED_PIN_CASE(9);
+    LED_PIN_CASE(10);
+    LED_PIN_CASE(11);
+    LED_PIN_CASE(14);
+    LED_PIN_CASE(15);
+    LED_PIN_CASE(18);
+    LED_PIN_CASE(19);
+    LED_PIN_CASE(20);
+    LED_PIN_CASE(21);
+    LED_PIN_CASE(22);
+    LED_PIN_CASE(23);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    LED_PIN_CASE(0);
+    LED_PIN_CASE(2);
+    LED_PIN_CASE(4);
+    LED_PIN_CASE(5);
+    LED_PIN_CASE(12);
+    LED_PIN_CASE(13);
+    LED_PIN_CASE(14);
+    LED_PIN_CASE(15);
+    LED_PIN_CASE(16);
+    LED_PIN_CASE(17);
+    LED_PIN_CASE(18);
+    LED_PIN_CASE(19);
+    LED_PIN_CASE(21);
+    LED_PIN_CASE(22);
+    LED_PIN_CASE(23);
+    LED_PIN_CASE(25);
+    LED_PIN_CASE(26);
+    LED_PIN_CASE(27);
+    LED_PIN_CASE(32);
+    LED_PIN_CASE(33);
+#endif
+    default:
+      FastLED.addLeds<WS2812B, hw::kDefaultDataPin, GRB>(leds_, count_);
+      return false;
+  }
+#undef LED_PIN_CASE
+}
+
+void LedController::begin(uint8_t dataPin, uint16_t ledCount) {
+  count_ = ledCount < 1 ? 1 : ledCount;
+  if (count_ > hw::kMaxNumLeds) count_ = hw::kMaxNumLeds;
+  if (!hw::isSupportedLedDataPin(dataPin)) dataPin = hw::kDefaultDataPin;
+  addLedsForPin(dataPin);
   FastLED.setMaxPowerInMilliWatts(hw::kMaxMilliwatts);
   FastLED.setBrightness(brightnessToPwm(style_.brightness));
   FastLED.clear(true);
@@ -45,7 +104,7 @@ uint16_t LedController::scaled(uint16_t baseMs) const {
 
 void LedController::showLeds() {
   if (style_.reverse) {
-    for (int i = 0, j = hw::kNumLeds - 1; i < j; ++i, --j) {
+    for (int i = 0, j = static_cast<int>(count_) - 1; i < j; ++i, --j) {
       CRGB tmp = leds_[i];
       leds_[i] = leds_[j];
       leds_[j] = tmp;
@@ -54,7 +113,7 @@ void LedController::showLeds() {
   FastLED.show();
   // Restore logical order so stateful effects (sparkle/fire) keep working.
   if (style_.reverse) {
-    for (int i = 0, j = hw::kNumLeds - 1; i < j; ++i, --j) {
+    for (int i = 0, j = static_cast<int>(count_) - 1; i < j; ++i, --j) {
       CRGB tmp = leds_[i];
       leds_[i] = leds_[j];
       leds_[j] = tmp;
@@ -63,26 +122,26 @@ void LedController::showLeds() {
 }
 
 void LedController::showBlack() {
-  fill_solid(leds_, hw::kNumLeds, CRGB::Black);
+  fill_solid(leds_, count_, CRGB::Black);
   showLeds();
 }
 
 void LedController::renderSolid(CRGB color) {
-  fill_solid(leds_, hw::kNumLeds, color);
+  fill_solid(leds_, count_, color);
   showLeds();
 }
 
 void LedController::renderProgressBar(CRGB onColor, CRGB offColor, uint8_t percent) {
-  int onLeds = static_cast<int>(hw::kNumLeds * (percent / 100.0f) + 0.5f);
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  int onLeds = static_cast<int>(count_ * (percent / 100.0f) + 0.5f);
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     leds_[i] = (i < onLeds) ? onColor : offColor;
   }
   showLeds();
 }
 
 void LedController::renderHeating(uint8_t percent) {
-  int lit = static_cast<int>(hw::kNumLeds * (percent / 100.0f) + 0.5f);
-  fill_solid(leds_, hw::kNumLeds, CRGB(30, 0, 0));
+  int lit = static_cast<int>(count_ * (percent / 100.0f) + 0.5f);
+  fill_solid(leds_, count_, CRGB(30, 0, 0));
   for (int i = 0; i < lit; i++) {
     leds_[i] = CRGB(map(i, 0, max(lit - 1, 1), 64, 255), map(i, 0, max(lit - 1, 1), 21, 85), 0);
   }
@@ -96,13 +155,13 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
   if (nowMs - lastStep > stepMs) {
     lastStep = nowMs;
     pos += dir;
-    if (pos >= hw::kNumLeds - 1) dir = -1;
+    if (pos >= static_cast<int>(count_) - 1) dir = -1;
     if (pos <= 0) dir = 1;
   }
-  fill_solid(leds_, hw::kNumLeds, CRGB::Black);
+  fill_solid(leds_, count_, CRGB::Black);
   for (int tail = 0; tail < 4; tail++) {
     int idx = pos - tail * dir;
-    if (idx >= 0 && idx < hw::kNumLeds) leds_[idx] = color / (1 << tail);
+    if (idx >= 0 && idx < static_cast<int>(count_)) leds_[idx] = color / (1 << tail);
   }
   showLeds();
 }
@@ -110,7 +169,7 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
 void LedController::renderWave(unsigned long nowMs, uint8_t hue) {
   float speed = style_.speed / 50.0f;
   float phase = nowMs * 0.002f * speed;
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
     leds_[i] = CHSV(hue, 255, v);
   }
@@ -121,7 +180,7 @@ void LedController::renderWaveColor(CRGB color, unsigned long nowMs) {
   // Scale the chosen RGB color — do not force HSV sat=255 (white → hue 0 = red).
   float speed = style_.speed / 50.0f;
   float phase = nowMs * 0.002f * speed;
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
     CRGB lit = color;
     lit.nscale8(v);
@@ -136,33 +195,34 @@ void LedController::renderPulse(CRGB color, unsigned long nowMs, uint16_t period
                                     : (1.0f - (t - periodMs / 2) / static_cast<float>(periodMs / 2));
   CRGB col = color;
   col.nscale8(static_cast<uint8_t>(32 + phase * 223));
-  fill_solid(leds_, hw::kNumLeds, col);
+  fill_solid(leds_, count_, col);
   showLeds();
 }
 
 void LedController::renderStrobe(CRGB color, unsigned long nowMs, uint16_t onMs, uint16_t offMs) {
   uint16_t t = nowMs % (onMs + offMs);
-  fill_solid(leds_, hw::kNumLeds, t < onMs ? color : CRGB::Black);
+  fill_solid(leds_, count_, t < onMs ? color : CRGB::Black);
   showLeds();
 }
 
 void LedController::renderRainbow(unsigned long nowMs) {
   uint8_t speed = style_.speed < 1 ? 1 : style_.speed;
   uint8_t base = static_cast<uint8_t>((nowMs / (20 + (100 - speed))) & 0xFF);
-  for (int i = 0; i < hw::kNumLeds; i++) {
-    leds_[i] = CHSV(static_cast<uint8_t>(base + i * (256 / hw::kNumLeds)), 255, 255);
+  const int step = count_ > 0 ? (256 / count_) : 0;
+  for (int i = 0; i < static_cast<int>(count_); i++) {
+    leds_[i] = CHSV(static_cast<uint8_t>(base + i * step), 255, 255);
   }
   showLeds();
 }
 
 void LedController::renderSparkle(CRGB color, unsigned long nowMs) {
   static unsigned long lastStep = 0;
-  fadeToBlackBy(leds_, hw::kNumLeds, 40);
+  fadeToBlackBy(leds_, count_, 40);
   if (nowMs - lastStep >= scaled(40)) {
     lastStep = nowMs;
     int sparks = 1 + (style_.speed / 40);
     for (int s = 0; s < sparks; s++) {
-      leds_[random16(hw::kNumLeds)] = color;
+      leds_[random16(count_)] = color;
     }
   }
   showLeds();
@@ -176,17 +236,17 @@ void LedController::renderFire(unsigned long nowMs) {
   }
   lastStep = nowMs;
 
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     heat_[i] = qsub8(heat_[i], random8(0, 40));
   }
-  for (int k = hw::kNumLeds - 1; k >= 2; k--) {
+  for (int k = static_cast<int>(count_) - 1; k >= 2; k--) {
     heat_[k] = (heat_[k - 1] + heat_[k - 2] + heat_[k - 2]) / 3;
   }
   if (random8() < 120) {
     int y = random8(2);
     heat_[y] = qadd8(heat_[y], random8(160, 255));
   }
-  for (int j = 0; j < hw::kNumLeds; j++) {
+  for (int j = 0; j < static_cast<int>(count_); j++) {
     leds_[j] = HeatColor(heat_[j]);
   }
   showLeds();

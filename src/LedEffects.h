@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
-// Selectable LED animations for Idle / Printing / Error.
+// Selectable LED animations for each status slot in the web UI.
 enum class LedEffect : uint8_t {
   Pulse = 0,
   Solid = 1,

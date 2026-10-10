@@ -4,8 +4,7 @@
 #include <AsyncUDP.h>
 
 // UPnP/SSDP advertiser (ESP32SSDP-style) so Fritzbox can store presentationURL
-// and show a clickable web-UI link. PrintSphere/PandaStatusOS do not advertise
-// over SSDP; they rely on DHCP hostname + mDNS. This is an extra signal for AVM.
+// and show a clickable web-UI link. Extra signal beyond DHCP hostname + mDNS.
 class SsdpAdvertiser {
  public:
   void configure(const String& friendlyName, const String& uuid);

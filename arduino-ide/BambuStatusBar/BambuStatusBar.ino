@@ -2,11 +2,11 @@
 // Source of truth is firmware/src/*.{h,cpp}; regenerate with:
 //   python3 firmware/tools/generate_arduino_sketch.py
 
+#include <cstdint>
 #include <sdkconfig.h>
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <cstring>
-#include <Arduino.h>
-#include <cstdint>
 #include <FastLED.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
@@ -29,12 +29,17 @@
 
 // ==== Config.h ====
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.0";
+constexpr const char* kFirmwareVersion = "1.0.1";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
 constexpr const char* kGithubRepo = "bambu-status-bar";
 constexpr const char* kGithubAssetName = "firmware.bin";
+
+constexpr const char* kDefaultHostname = "BambuStatusBar";
+constexpr const char* kDefaultApSsid = "BambuStatusBar";
+constexpr const char* kDefaultApPass = "987654321";
+constexpr const char* kDefaultApIp = "192.168.254.1";
 
 // Board pins come from the PlatformIO environment so the ESP32-C6 Super Mini
 // (LED data on GPIO19, BOOT on GPIO9) and a classic ESP32 dev board can share
@@ -57,11 +62,68 @@ constexpr const char* kGithubAssetName = "firmware.bin";
 #endif
 
 namespace hw {
-constexpr int kDataPin = STATUS_LED_PIN;
+constexpr uint8_t kDefaultDataPin = STATUS_LED_PIN;
 constexpr int kResetButtonPin = STATUS_BOOT_PIN;
-constexpr int kNumLeds = 18;
+constexpr uint16_t kDefaultNumLeds = 18;
+constexpr uint16_t kMaxNumLeds = 64;
 constexpr uint16_t kMaxMilliwatts = 850;
 constexpr unsigned long kResetHoldMs = 3000;
+
+// FastLED needs the data pin as a compile-time template argument, so only this
+// chip-valid set can be selected from the web UI.
+inline bool isSupportedLedDataPin(uint8_t pin) {
+  switch (pin) {
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+    // FastLED marks GPIO12/13 (USB) and several others unusable on C6.
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+    case 9:
+    case 10:
+    case 11:
+    case 14:
+    case 15:
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    case 0:
+    case 2:
+    case 4:
+    case 5:
+    case 12:
+    case 13:
+    case 14:
+    case 15:
+    case 16:
+    case 17:
+    case 18:
+    case 19:
+    case 21:
+    case 22:
+    case 23:
+    case 25:
+    case 26:
+    case 27:
+    case 32:
+    case 33:
+#else
+    case STATUS_LED_PIN:
+#endif
+      return true;
+    default:
+      return false;
+  }
+}
 }  // namespace hw
 
 namespace led_cfg {
@@ -70,6 +132,7 @@ constexpr unsigned long kFinishedSolidMs = 15UL * 60UL * 1000UL;
 // Idle longer than this turns the bar off until the UI or a print wakes it.
 constexpr unsigned long kStandbyAfterIdleMs = 120UL * 60UL * 1000UL;
 constexpr uint8_t kDefaultBrightnessPercent = 50;
+constexpr uint8_t kDefaultSpeedPercent = 50;
 }  // namespace led_cfg
 
 namespace mqtt_cfg {
@@ -82,6 +145,34 @@ constexpr unsigned long kPushallIntervalMs = 45000;
 // Periodic pushall while connected so stale stg_cur cannot latch.
 constexpr unsigned long kPeriodicPushallMs = 60000;
 }  // namespace mqtt_cfg
+
+// ==== NetHelpers.h ====
+// Read an HTTP-style header value (case-insensitive key, first match only at
+// the start of a line so substrings inside other names are ignored).
+inline String httpHeaderValue(const String& text, const char* key) {
+  if (!key || !key[0]) return "";
+  String lower = text;
+  lower.toLowerCase();
+  String needle(key);
+  needle.toLowerCase();
+  needle += ":";
+  int at = 0;
+  while (at >= 0 && at < lower.length()) {
+    int found = lower.indexOf(needle, at);
+    if (found < 0) return "";
+    if (found == 0 || lower[found - 1] == '\n') {
+      int colon = found + needle.length() - 1;
+      int end = text.indexOf('\n', colon);
+      if (end < 0) end = text.length();
+      String value = text.substring(colon + 1, end);
+      value.trim();
+      value.replace("\r", "");
+      return value;
+    }
+    at = found + 1;
+  }
+  return "";
+}
 
 // ==== PrinterState.h ====
 // Pure logic: turns a Bambu Lab "device/<serial>/report" MQTT payload's
@@ -625,7 +716,7 @@ void PrinterStateMachine::updateHeating(JsonVariantConst printObj) {
 }
 
 // ==== LedEffects.h ====
-// Selectable LED animations for Idle / Printing / Error.
+// Selectable LED animations for each status slot in the web UI.
 enum class LedEffect : uint8_t {
   Pulse = 0,
   Solid = 1,
@@ -718,7 +809,7 @@ struct LedStyleSlot {
 
 struct LedStyle {
   uint8_t brightness = led_cfg::kDefaultBrightnessPercent;  // 0..100
-  uint8_t speed = 50;                                       // 1..100, 50 is 1x
+  uint8_t speed = led_cfg::kDefaultSpeedPercent;            // 1..100, 50 is 1x
   LedStyleSlot idle{CRGB::White, LedEffect::Pulse};
   LedStyleSlot printing{CRGB::White, LedEffect::Progress};
   LedStyleSlot error{CRGB::Red, LedEffect::Strobe};
@@ -734,12 +825,14 @@ struct LedStyle {
 
 class LedController {
  public:
-  void begin();
+  void begin(uint8_t dataPin, uint16_t ledCount);
   void setStyle(const LedStyle& style);
   void setAsleep(bool asleep) { asleep_ = asleep; }
   void render(SystemState state, const PrinterTelemetry& telemetry, unsigned long nowMs);
+  uint16_t ledCount() const { return count_; }
 
  private:
+  bool addLedsForPin(uint8_t pin);
   void renderProgressBar(CRGB onColor, CRGB offColor, uint8_t percent);
   void renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs);
   void renderWave(unsigned long nowMs, uint8_t hue);
@@ -757,10 +850,11 @@ class LedController {
   void showLeds();
   uint16_t scaled(uint16_t baseMs) const;
 
-  CRGB leds_[hw::kNumLeds];
+  CRGB leds_[hw::kMaxNumLeds];
+  uint16_t count_ = hw::kDefaultNumLeds;
   LedStyle style_;
   bool asleep_ = false;
-  uint8_t heat_[hw::kNumLeds] = {};
+  uint8_t heat_[hw::kMaxNumLeds] = {};
 };
 
 // ==== LedController.cpp ====
@@ -771,8 +865,67 @@ uint8_t brightnessToPwm(uint8_t percent) {
 }
 }  // namespace
 
-void LedController::begin() {
-  FastLED.addLeds<WS2812B, hw::kDataPin, GRB>(leds_, hw::kNumLeds);
+bool LedController::addLedsForPin(uint8_t pin) {
+#define LED_PIN_CASE(p)                              \
+  case p:                                            \
+    FastLED.addLeds<WS2812B, p, GRB>(leds_, count_); \
+    return true
+  switch (pin) {
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+    LED_PIN_CASE(0);
+    LED_PIN_CASE(1);
+    LED_PIN_CASE(2);
+    LED_PIN_CASE(3);
+    LED_PIN_CASE(4);
+    LED_PIN_CASE(5);
+    LED_PIN_CASE(6);
+    LED_PIN_CASE(7);
+    LED_PIN_CASE(8);
+    LED_PIN_CASE(9);
+    LED_PIN_CASE(10);
+    LED_PIN_CASE(11);
+    LED_PIN_CASE(14);
+    LED_PIN_CASE(15);
+    LED_PIN_CASE(18);
+    LED_PIN_CASE(19);
+    LED_PIN_CASE(20);
+    LED_PIN_CASE(21);
+    LED_PIN_CASE(22);
+    LED_PIN_CASE(23);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    LED_PIN_CASE(0);
+    LED_PIN_CASE(2);
+    LED_PIN_CASE(4);
+    LED_PIN_CASE(5);
+    LED_PIN_CASE(12);
+    LED_PIN_CASE(13);
+    LED_PIN_CASE(14);
+    LED_PIN_CASE(15);
+    LED_PIN_CASE(16);
+    LED_PIN_CASE(17);
+    LED_PIN_CASE(18);
+    LED_PIN_CASE(19);
+    LED_PIN_CASE(21);
+    LED_PIN_CASE(22);
+    LED_PIN_CASE(23);
+    LED_PIN_CASE(25);
+    LED_PIN_CASE(26);
+    LED_PIN_CASE(27);
+    LED_PIN_CASE(32);
+    LED_PIN_CASE(33);
+#endif
+    default:
+      FastLED.addLeds<WS2812B, hw::kDefaultDataPin, GRB>(leds_, count_);
+      return false;
+  }
+#undef LED_PIN_CASE
+}
+
+void LedController::begin(uint8_t dataPin, uint16_t ledCount) {
+  count_ = ledCount < 1 ? 1 : ledCount;
+  if (count_ > hw::kMaxNumLeds) count_ = hw::kMaxNumLeds;
+  if (!hw::isSupportedLedDataPin(dataPin)) dataPin = hw::kDefaultDataPin;
+  addLedsForPin(dataPin);
   FastLED.setMaxPowerInMilliWatts(hw::kMaxMilliwatts);
   FastLED.setBrightness(brightnessToPwm(style_.brightness));
   FastLED.clear(true);
@@ -809,7 +962,7 @@ uint16_t LedController::scaled(uint16_t baseMs) const {
 
 void LedController::showLeds() {
   if (style_.reverse) {
-    for (int i = 0, j = hw::kNumLeds - 1; i < j; ++i, --j) {
+    for (int i = 0, j = static_cast<int>(count_) - 1; i < j; ++i, --j) {
       CRGB tmp = leds_[i];
       leds_[i] = leds_[j];
       leds_[j] = tmp;
@@ -818,7 +971,7 @@ void LedController::showLeds() {
   FastLED.show();
   // Restore logical order so stateful effects (sparkle/fire) keep working.
   if (style_.reverse) {
-    for (int i = 0, j = hw::kNumLeds - 1; i < j; ++i, --j) {
+    for (int i = 0, j = static_cast<int>(count_) - 1; i < j; ++i, --j) {
       CRGB tmp = leds_[i];
       leds_[i] = leds_[j];
       leds_[j] = tmp;
@@ -827,26 +980,26 @@ void LedController::showLeds() {
 }
 
 void LedController::showBlack() {
-  fill_solid(leds_, hw::kNumLeds, CRGB::Black);
+  fill_solid(leds_, count_, CRGB::Black);
   showLeds();
 }
 
 void LedController::renderSolid(CRGB color) {
-  fill_solid(leds_, hw::kNumLeds, color);
+  fill_solid(leds_, count_, color);
   showLeds();
 }
 
 void LedController::renderProgressBar(CRGB onColor, CRGB offColor, uint8_t percent) {
-  int onLeds = static_cast<int>(hw::kNumLeds * (percent / 100.0f) + 0.5f);
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  int onLeds = static_cast<int>(count_ * (percent / 100.0f) + 0.5f);
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     leds_[i] = (i < onLeds) ? onColor : offColor;
   }
   showLeds();
 }
 
 void LedController::renderHeating(uint8_t percent) {
-  int lit = static_cast<int>(hw::kNumLeds * (percent / 100.0f) + 0.5f);
-  fill_solid(leds_, hw::kNumLeds, CRGB(30, 0, 0));
+  int lit = static_cast<int>(count_ * (percent / 100.0f) + 0.5f);
+  fill_solid(leds_, count_, CRGB(30, 0, 0));
   for (int i = 0; i < lit; i++) {
     leds_[i] = CRGB(map(i, 0, max(lit - 1, 1), 64, 255), map(i, 0, max(lit - 1, 1), 21, 85), 0);
   }
@@ -860,13 +1013,13 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
   if (nowMs - lastStep > stepMs) {
     lastStep = nowMs;
     pos += dir;
-    if (pos >= hw::kNumLeds - 1) dir = -1;
+    if (pos >= static_cast<int>(count_) - 1) dir = -1;
     if (pos <= 0) dir = 1;
   }
-  fill_solid(leds_, hw::kNumLeds, CRGB::Black);
+  fill_solid(leds_, count_, CRGB::Black);
   for (int tail = 0; tail < 4; tail++) {
     int idx = pos - tail * dir;
-    if (idx >= 0 && idx < hw::kNumLeds) leds_[idx] = color / (1 << tail);
+    if (idx >= 0 && idx < static_cast<int>(count_)) leds_[idx] = color / (1 << tail);
   }
   showLeds();
 }
@@ -874,7 +1027,7 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
 void LedController::renderWave(unsigned long nowMs, uint8_t hue) {
   float speed = style_.speed / 50.0f;
   float phase = nowMs * 0.002f * speed;
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
     leds_[i] = CHSV(hue, 255, v);
   }
@@ -885,7 +1038,7 @@ void LedController::renderWaveColor(CRGB color, unsigned long nowMs) {
   // Scale the chosen RGB color — do not force HSV sat=255 (white → hue 0 = red).
   float speed = style_.speed / 50.0f;
   float phase = nowMs * 0.002f * speed;
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
     CRGB lit = color;
     lit.nscale8(v);
@@ -900,33 +1053,34 @@ void LedController::renderPulse(CRGB color, unsigned long nowMs, uint16_t period
                                     : (1.0f - (t - periodMs / 2) / static_cast<float>(periodMs / 2));
   CRGB col = color;
   col.nscale8(static_cast<uint8_t>(32 + phase * 223));
-  fill_solid(leds_, hw::kNumLeds, col);
+  fill_solid(leds_, count_, col);
   showLeds();
 }
 
 void LedController::renderStrobe(CRGB color, unsigned long nowMs, uint16_t onMs, uint16_t offMs) {
   uint16_t t = nowMs % (onMs + offMs);
-  fill_solid(leds_, hw::kNumLeds, t < onMs ? color : CRGB::Black);
+  fill_solid(leds_, count_, t < onMs ? color : CRGB::Black);
   showLeds();
 }
 
 void LedController::renderRainbow(unsigned long nowMs) {
   uint8_t speed = style_.speed < 1 ? 1 : style_.speed;
   uint8_t base = static_cast<uint8_t>((nowMs / (20 + (100 - speed))) & 0xFF);
-  for (int i = 0; i < hw::kNumLeds; i++) {
-    leds_[i] = CHSV(static_cast<uint8_t>(base + i * (256 / hw::kNumLeds)), 255, 255);
+  const int step = count_ > 0 ? (256 / count_) : 0;
+  for (int i = 0; i < static_cast<int>(count_); i++) {
+    leds_[i] = CHSV(static_cast<uint8_t>(base + i * step), 255, 255);
   }
   showLeds();
 }
 
 void LedController::renderSparkle(CRGB color, unsigned long nowMs) {
   static unsigned long lastStep = 0;
-  fadeToBlackBy(leds_, hw::kNumLeds, 40);
+  fadeToBlackBy(leds_, count_, 40);
   if (nowMs - lastStep >= scaled(40)) {
     lastStep = nowMs;
     int sparks = 1 + (style_.speed / 40);
     for (int s = 0; s < sparks; s++) {
-      leds_[random16(hw::kNumLeds)] = color;
+      leds_[random16(count_)] = color;
     }
   }
   showLeds();
@@ -940,17 +1094,17 @@ void LedController::renderFire(unsigned long nowMs) {
   }
   lastStep = nowMs;
 
-  for (int i = 0; i < hw::kNumLeds; i++) {
+  for (int i = 0; i < static_cast<int>(count_); i++) {
     heat_[i] = qsub8(heat_[i], random8(0, 40));
   }
-  for (int k = hw::kNumLeds - 1; k >= 2; k--) {
+  for (int k = static_cast<int>(count_) - 1; k >= 2; k--) {
     heat_[k] = (heat_[k - 1] + heat_[k - 2] + heat_[k - 2]) / 3;
   }
   if (random8() < 120) {
     int y = random8(2);
     heat_[y] = qadd8(heat_[y], random8(160, 255));
   }
-  for (int j = 0; j < hw::kNumLeds; j++) {
+  for (int j = 0; j < static_cast<int>(count_); j++) {
     leds_[j] = HeatColor(heat_[j]);
   }
   showLeds();
@@ -1231,19 +1385,23 @@ struct LightSlot {
 struct DeviceSettings {
   String wifiSsid;
   String wifiPass;
-  String hostname = "BambuStatusBar";
+  String hostname = kDefaultHostname;
 
   String printerIp;
   String printerSerial;
   String accessCode;
 
-  String apSsid = "BambuStatusBar";
-  String apPass = "987654321";
-  String apIp = "192.168.254.1";
+  String apSsid = kDefaultApSsid;
+  String apPass = kDefaultApPass;
+  String apIp = kDefaultApIp;
   bool apEnabled = true;
 
-  uint8_t brightness = 50;  // 0..100, H2D default is 50%
-  uint8_t speed = 50;       // 1..100, 50 is 1x
+  uint8_t brightness = led_cfg::kDefaultBrightnessPercent;  // 0..100
+  uint8_t speed = led_cfg::kDefaultSpeedPercent;            // 1..100, 50 is 1x
+
+  // Hardware for the WS2812 bar. Changing pin/count requires a reboot.
+  uint8_t ledPin = hw::kDefaultDataPin;
+  uint16_t ledCount = hw::kDefaultNumLeds;
 
   // Defaults match the previous hard-coded LED look for each phase.
   LightSlot idle{255, 255, 255, LedEffect::Pulse};
@@ -1312,16 +1470,18 @@ void SettingsStore::begin() {
   prefs.begin(kNs, /*readOnly=*/true);
   data_.wifiSsid = prefs.getString("wssid", "");
   data_.wifiPass = prefs.getString("wpass", "");
-  data_.hostname = prefs.getString("host", "BambuStatusBar");
+  data_.hostname = prefs.getString("host", kDefaultHostname);
   data_.printerIp = prefs.getString("ip", "");
   data_.printerSerial = prefs.getString("serial", "");
   data_.accessCode = prefs.getString("code", "");
-  data_.apSsid = prefs.getString("apssid", "BambuStatusBar");
-  data_.apPass = prefs.getString("appass", "987654321");
-  data_.apIp = prefs.getString("apip", "192.168.254.1");
+  data_.apSsid = prefs.getString("apssid", kDefaultApSsid);
+  data_.apPass = prefs.getString("appass", kDefaultApPass);
+  data_.apIp = prefs.getString("apip", kDefaultApIp);
   data_.apEnabled = prefs.getUChar("apen", 1) != 0;
-  data_.brightness = prefs.getUChar("bri", 50);
-  data_.speed = prefs.getUChar("spd", 50);
+  data_.brightness = prefs.getUChar("bri", led_cfg::kDefaultBrightnessPercent);
+  data_.speed = prefs.getUChar("spd", led_cfg::kDefaultSpeedPercent);
+  data_.ledPin = prefs.getUChar("ledpin", hw::kDefaultDataPin);
+  data_.ledCount = prefs.getUShort("ledcnt", hw::kDefaultNumLeds);
 
   loadSlot(prefs, data_.idle, "ir", "ig", "ib", "idlefx", 255, 255, 255, LedEffect::Pulse);
   loadSlot(prefs, data_.printing, "pr", "pg", "pb", "printfx", 255, 255, 255, LedEffect::Progress);
@@ -1342,13 +1502,16 @@ void SettingsStore::begin() {
 }
 
 void SettingsStore::clamp() {
-  if (data_.hostname.isEmpty()) data_.hostname = "BambuStatusBar";
-  if (data_.apSsid.isEmpty()) data_.apSsid = "BambuStatusBar";
-  if (data_.apPass.isEmpty()) data_.apPass = "987654321";
-  if (data_.apIp.isEmpty()) data_.apIp = "192.168.254.1";
+  if (data_.hostname.isEmpty()) data_.hostname = kDefaultHostname;
+  if (data_.apSsid.isEmpty()) data_.apSsid = kDefaultApSsid;
+  if (data_.apPass.isEmpty()) data_.apPass = kDefaultApPass;
+  if (data_.apIp.isEmpty()) data_.apIp = kDefaultApIp;
   if (data_.brightness > 100) data_.brightness = 100;
   if (data_.speed < 1) data_.speed = 1;
   if (data_.speed > 100) data_.speed = 100;
+  if (!hw::isSupportedLedDataPin(data_.ledPin)) data_.ledPin = hw::kDefaultDataPin;
+  if (data_.ledCount < 1) data_.ledCount = 1;
+  if (data_.ledCount > hw::kMaxNumLeds) data_.ledCount = hw::kMaxNumLeds;
   clampSlot(data_.idle, LedEffect::Pulse);
   clampSlot(data_.printing, LedEffect::Progress);
   clampSlot(data_.error, LedEffect::Strobe);
@@ -1378,6 +1541,8 @@ void SettingsStore::save() {
   prefs.putUChar("apen", data_.apEnabled ? 1 : 0);
   prefs.putUChar("bri", data_.brightness);
   prefs.putUChar("spd", data_.speed);
+  prefs.putUChar("ledpin", data_.ledPin);
+  prefs.putUShort("ledcnt", data_.ledCount);
   saveSlot(prefs, data_.idle, "ir", "ig", "ib", "idlefx");
   saveSlot(prefs, data_.printing, "pr", "pg", "pb", "printfx");
   saveSlot(prefs, data_.error, "er", "eg", "eb", "errorfx");
@@ -1404,8 +1569,8 @@ void SettingsStore::clear() {
 }
 
 void SettingsStore::resetLights() {
-  data_.brightness = 50;
-  data_.speed = 50;
+  data_.brightness = led_cfg::kDefaultBrightnessPercent;
+  data_.speed = led_cfg::kDefaultSpeedPercent;
   data_.idle = LightSlot{255, 255, 255, LedEffect::Pulse};
   data_.printing = LightSlot{255, 255, 255, LedEffect::Progress};
   data_.error = LightSlot{255, 0, 0, LedEffect::Strobe};
@@ -1633,8 +1798,7 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
 
 // ==== SsdpAdvertiser.h ====
 // UPnP/SSDP advertiser (ESP32SSDP-style) so Fritzbox can store presentationURL
-// and show a clickable web-UI link. PrintSphere/PandaStatusOS do not advertise
-// over SSDP; they rely on DHCP hostname + mDNS. This is an extra signal for AVM.
+// and show a clickable web-UI link. Extra signal beyond DHCP hostname + mDNS.
 class SsdpAdvertiser {
  public:
   void configure(const String& friendlyName, const String& uuid);
@@ -1675,28 +1839,10 @@ bool wantsRoot(const String& st) {
   return st.equalsIgnoreCase("ssdp:all") || st.equalsIgnoreCase("upnp:rootdevice") ||
          st.equalsIgnoreCase("urn:schemas-upnp-org:device:Basic:1");
 }
-
-String headerLine(const String& text, const char* key) {
-  String lower = text;
-  lower.toLowerCase();
-  String needle(key);
-  needle.toLowerCase();
-  needle += ":";
-  int found = lower.indexOf(needle);
-  if (found < 0) return "";
-  if (found > 0 && lower[found - 1] != '\n') return "";
-  int colon = found + needle.length() - 1;
-  int end = text.indexOf('\n', colon);
-  if (end < 0) end = text.length();
-  String value = text.substring(colon + 1, end);
-  value.trim();
-  value.replace("\r", "");
-  return value;
-}
 }  // namespace
 
 void SsdpAdvertiser::configure(const String& friendlyName, const String& uuid) {
-  friendlyName_ = friendlyName.length() ? friendlyName : String("BambuStatusBar");
+  friendlyName_ = friendlyName.length() ? friendlyName : String(kDefaultHostname);
   uuid_ = uuid;
   if (!uuid_.isEmpty() && !uuid_.startsWith("uuid:")) uuid_ = String("uuid:") + uuid_;
 }
@@ -1721,6 +1867,7 @@ void SsdpAdvertiser::begin(const String& friendlyName, const String& uuid) {
 }
 
 void SsdpAdvertiser::stop() {
+  if (!running_) return;
   running_ = false;
   udp_.close();
 }
@@ -1753,7 +1900,7 @@ String SsdpAdvertiser::usn(const char* st) const {
 
 String SsdpAdvertiser::schemaXml() const {
   // Relative presentationURL (ESP32SSDP style); Fritzbox joins it with URLBase.
-  const String name = friendlyName_.length() ? friendlyName_ : String("BambuStatusBar");
+  const String name = friendlyName_.length() ? friendlyName_ : String(kDefaultHostname);
   const String udn = uuid_.length() ? uuid_ : String("uuid:00000000-0000-0000-0000-000000000000");
   const String ip = WiFi.localIP().toString();
   const String base = String("http://") + ip + ":80/";
@@ -1855,7 +2002,7 @@ void SsdpAdvertiser::onPacket(AsyncUDPPacket& packet) {
   raw[len] = 0;
   String text(raw);
   if (text.indexOf("M-SEARCH") < 0) return;
-  String st = headerLine(text, "ST");
+  String st = httpHeaderValue(text, "ST");
   if (st.isEmpty()) return;
   if (st.equalsIgnoreCase(uuid_)) {
     sendSearchResponse(packet.remoteIP(), packet.remotePort(), st.c_str());
@@ -2005,7 +2152,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
   <div class="section-body">
     <div class="actions">
       <button type="button" class="secondary" id="printerScan" data-i="printer_scan">Scan Printers</button>
-      <div class="micro" id="printerScanDetail" data-i="printer_scan_hint">SSDP search on the LAN. Needs Wi-Fi first.</div>
+      <div class="micro" id="printerScanDetail" data-i="printer_scan_hint">Listens ~12 s for Bambu NOTIFY broadcasts (UDP 2021). Needs Wi-Fi first.</div>
     </div>
     <div id="printerList"></div>
     <div class="grid-2">
@@ -2033,6 +2180,11 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
       <div class="field"><label for="brightness"><span data-i="light_brightness">Brightness</span> <span id="briVal"></span></label><input id="brightness" type="range" min="0" max="100" value="50"></div>
       <div class="field"><label for="speed"><span data-i="light_speed">Speed</span> <span id="spdVal"></span></label><input id="speed" type="range" min="1" max="100" value="50"></div>
     </div>
+    <div class="grid-2">
+      <div class="field"><label for="ledPin" data-i="light_pin">LED data pin (GPIO)</label><input id="ledPin" type="number" min="0" max="48" step="1" value="19"></div>
+      <div class="field"><label for="ledCount" data-i="light_count">LED count</label><input id="ledCount" type="number" min="1" max="64" step="1" value="18"></div>
+    </div>
+    <p class="micro" data-i="light_hw_hint">Pin or count changes reboot the device so FastLED can re-init.</p>
     <label class="check"><input id="ledReverse" type="checkbox"> <span data-i="light_reverse">Reverse LED direction</span></label>
     <div class="light-rows" id="lightStates"></div>
     <div class="actions"><button type="button" class="secondary" id="lightReset" data-i="light_reset">Reset Colors</button></div>
@@ -2135,6 +2287,8 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"LED-Richtung umkehren",
+light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
+light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
 fx_pulse:"Atmen",fx_solid:"Fest",fx_comet:"Komet",fx_wave:"Welle",fx_strobe:"Blinken",fx_progress:"Fortschritt",
 fx_rainbow:"Regenbogen",fx_sparkle:"Funkeln",fx_fire:"Feuer",
 light_reset:"Farben & Animationen zurücksetzen",light_hint:"Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig bleibt 15 Minuten, danach Leerlauf.",
@@ -2153,6 +2307,9 @@ ota_checking:"Prüfe GitHub…",ota_installing:"Lade Firmware und flashe…",
 err_no_wifi:"Zuerst mit Wi-Fi verbinden",err_no_release:"Kein Release gefunden",err_no_asset:"Kein firmware.bin im Release",
 err_http_begin:"Verbindung fehlgeschlagen",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
 err_short_write:"Download unvollständig",err_bad_version:"Versionsformat ungültig",err_bad_json:"Ungültige Antwort",
+err_bad_request:"Ungültige Anfrage",err_bad_lang:"Sprache ungültig",err_udp_bind:"UDP-Bind fehlgeschlagen",
+err_ota_busy:"OTA läuft bereits",err_bad_url:"URL ungültig",err_not_found:"Nicht gefunden",
+err_bad_led_pin:"GPIO-Pin nicht unterstützt",err_bad_led_count:"LED-Anzahl ungültig",
 sec_device:"Device",sec_device_desc:"Sprache und Werkseinstellungen.",pill_device:"Device",lang:"Sprache",
 factory:"Werkseinstellungen",boot_hint:"Oder BOOT am laufenden Gerät 3 Sekunden halten.",
 wifi_on:"Verbunden",wifi_off:"Nicht verbunden",wifi_try:"Verbinde…",wifi_fail:"Wi-Fi fehlgeschlagen",
@@ -2164,7 +2321,7 @@ state_provisioning:"Nicht eingerichtet",state_wifi:"Suche Wi-Fi",state_mqtt:"Ver
 state_idle:"Leerlauf",state_homing:"Referenzfahrt",state_leveling:"Nivellieren",state_preparing:"Vorbereitung",
 state_downloading:"Download",state_heating:"Heizen",state_printing:"Druck",state_paused:"Pause",
 state_finished:"Fertig",state_error:"Fehler",state_standby:"Standby",state_unknown:"—",
-err_bad_ssid:"SSID ungültig",err_bad_pass:"Passwort ungültig",err_bad_json:"Ungültige Eingabe",
+err_bad_ssid:"SSID ungültig",err_bad_pass:"Passwort ungültig",
 err_ap_pass:"Hotspot-Passwort: leer oder ≥ 8 Zeichen",err_bad_ip:"IP ungültig",
 err_bad_host:"Hostname: Buchstaben, Zahlen, Bindestrich oder Unterstrich",err_bad_printer:"Druckerdaten ungültig",
 err_bad_leds:"Lichtwerte ungültig"
@@ -2193,6 +2350,8 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"Reverse LED direction",
+light_pin:"LED data pin (GPIO)",light_count:"LED count",
+light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
 fx_pulse:"Pulse",fx_solid:"Solid",fx_comet:"Comet",fx_wave:"Wave",fx_strobe:"Strobe",fx_progress:"Progress",
 fx_rainbow:"Rainbow",fx_sparkle:"Sparkle",fx_fire:"Fire",
 light_reset:"Reset colors & animations",light_hint:"Color and animation per status. Brightness and speed apply to all. Finished stays for 15 minutes, then idle.",
@@ -2211,6 +2370,9 @@ ota_checking:"Checking GitHub…",ota_installing:"Downloading and flashing…",
 err_no_wifi:"Connect to Wi-Fi first",err_no_release:"No release found",err_no_asset:"No firmware.bin in release",
 err_http_begin:"Connection failed",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
 err_short_write:"Incomplete download",err_bad_version:"Invalid version format",err_bad_json:"Invalid response",
+err_bad_request:"Invalid request",err_bad_lang:"Invalid language",err_udp_bind:"UDP bind failed",
+err_ota_busy:"OTA already in progress",err_bad_url:"Invalid URL",err_not_found:"Not found",
+err_bad_led_pin:"GPIO pin not supported",err_bad_led_count:"Invalid LED count",
 sec_device:"Device",sec_device_desc:"Language and factory reset.",pill_device:"Device",lang:"Language",
 factory:"Factory Reset",boot_hint:"Or hold BOOT for 3 seconds while the device is already running.",
 wifi_on:"Connected",wifi_off:"Not connected",wifi_try:"Connecting…",wifi_fail:"Wi-Fi failed",
@@ -2222,7 +2384,7 @@ state_provisioning:"Not set up",state_wifi:"Joining Wi-Fi",state_mqtt:"Connectin
 state_idle:"Idle",state_homing:"Homing",state_leveling:"Leveling",state_preparing:"Preparing",
 state_downloading:"Downloading",state_heating:"Heating",state_printing:"Printing",state_paused:"Paused",
 state_finished:"Finished",state_error:"Error",state_standby:"Standby",state_unknown:"—",
-err_bad_ssid:"Invalid SSID",err_bad_pass:"Invalid password",err_bad_json:"Invalid input",
+err_bad_ssid:"Invalid SSID",err_bad_pass:"Invalid password",
 err_ap_pass:"Hotspot password: empty or ≥ 8 characters",err_bad_ip:"Invalid IP",
 err_bad_host:"Hostname: letters, digits, hyphen or underscore",err_bad_printer:"Invalid printer details",
 err_bad_leds:"Invalid light values"
@@ -2331,6 +2493,11 @@ function applyStatus(data){
     setIdle(s.key+'Effect', leds[s.key+'Effect']||def.fx);
   });
   setIdle("ledReverse", !!leds.reverse);
+  if(document.activeElement!==$("ledPin")) $("ledPin").value=leds.pin??19;
+  if(document.activeElement!==$("ledCount")){
+    $("ledCount").max=leds.maxCount||64;
+    $("ledCount").value=leds.count??18;
+  }
   $("briVal").textContent=$("brightness").value+"%";
   $("spdVal").textContent=$("speed").value+"%";
   setIdle("apEnabled", !!ap.enabled);
@@ -2385,10 +2552,19 @@ function renderPrinters(data){
 function scheduleLeds(){clearTimeout(ledTimer);ledTimer=setTimeout(saveLeds,250)}
 async function saveLeds(){
   buildLightRows();
-  const body={brightness:Number($("brightness").value),speed:Number($("speed").value),reverse:$("ledReverse").checked};
+  const body={
+    brightness:Number($("brightness").value),
+    speed:Number($("speed").value),
+    reverse:$("ledReverse").checked,
+    pin:Number($("ledPin").value),
+    count:Number($("ledCount").value)
+  };
   LIGHT_SLOTS.forEach(s=>{ body[s.key]=$(s.key+'Color').value; body[s.key+'Effect']=$(s.key+'Effect').value; });
-  try{await api("/api/leds",body);setStatus(t("saved"),"")}
-  catch(e){setStatus(errText(e.message),"")}
+  try{
+    const d=await api("/api/leds",body);
+    setStatus(d.reboot?t("rebooting"):t("saved"),"");
+    if(d.reboot)clearInterval(pollTimer);
+  }catch(e){setStatus(errText(e.message),"")}
 }
 $("wifiSelect").onchange=()=>{if($("wifiSelect").value) $("ssid").value=$("wifiSelect").value};
 $("wifiScan").onclick=async()=>{
@@ -2416,6 +2592,7 @@ $("bindBtn").onclick=async()=>{
 ["brightness","speed"].forEach(id=>{
   $(id).addEventListener("input",()=>{$("briVal").textContent=$("brightness").value+"%";$("spdVal").textContent=$("speed").value+"%";scheduleLeds()});
 });
+["ledPin","ledCount"].forEach(id=>$(id).addEventListener("change",scheduleLeds));
 $("ledReverse").addEventListener("change",scheduleLeds);
 $("lightReset").onclick=async()=>{try{await api("/api/leds/reset",{});setStatus(t("saved"),"");refresh()}catch(e){setStatus(errText(e.message),"")}};
 buildLightRows();
@@ -2558,6 +2735,7 @@ class WebUi {
   bool apRunning_ = false;
   int apChannel_ = 1;
   bool mdnsStarted_ = false;
+  unsigned long mdnsRetryAt_ = 0;
 
   bool channelAligned_ = false;
   bool connectArmed_ = false;
@@ -2653,9 +2831,8 @@ bool validHostname(const char* text) {
   if (text[0] == '-' || text[0] == '_' || text[n - 1] == '-' || text[n - 1] == '_') return false;
   for (size_t i = 0; i < n; i++) {
     unsigned char c = static_cast<unsigned char>(text[i]);
-    // Underscores are not classic DNS labels, but Fritzbox and many routers
-    // accept them in the DHCP client hostname — users expect names like
-    // Panda_Status_A1_Mini.
+    // Underscores are allowed in the stored name; dhcpHostname() maps them to
+    // hyphens for the wire (Fritzbox-safe).
     if (!isalnum(c) && c != '-' && c != '_') return false;
   }
   return true;
@@ -2721,42 +2898,12 @@ bool parseColor(const char* text, uint8_t& r, uint8_t& g, uint8_t& b) {
   return true;
 }
 
-String headerValue(const String& text, const char* key) {
-  String lower = text;
-  lower.toLowerCase();
-  String needle(key);
-  needle.toLowerCase();
-  needle += ":";
-  int at = 0;
-  while (at >= 0 && at < lower.length()) {
-    int found = lower.indexOf(needle, at);
-    if (found < 0) return "";
-    // Match only at the start of a line so "DevName.bambu.com" does not hit
-    // a substring of another header.
-    if (found == 0 || lower[found - 1] == '\n') {
-      int colon = found + needle.length() - 1;
-      int end = text.indexOf('\n', colon);
-      if (end < 0) end = text.length();
-      String value = text.substring(colon + 1, end);
-      value.trim();
-      value.replace("\r", "");
-      return value;
-    }
-    at = found + 1;
-  }
-  return "";
-}
 }  // namespace
 
 void WebUi::begin() {
   static Impl storage;
   impl_ = &storage;
   store_.begin();
-
-  if (store_.data().apSsid.isEmpty()) {
-    store_.data().apSsid = "BambuStatusBar";
-    store_.save();
-  }
 
   WiFi.persistent(false);
   WiFi.setSleep(false);
@@ -2856,13 +3003,17 @@ void WebUi::loop() {
   pollWifiScan();
   pollPrinterScan();
   pollWifiConnect();
-  if (staConnected_ && !mdnsStarted_) startMdns();
-  if (staConnected_ && !impl_->ssdp.running()) startSsdp();
-  if (!staConnected_) {
-    mdnsStarted_ = false;
-    stopSsdp();
-  } else {
+  if (staConnected_) {
+    if (!mdnsStarted_ && static_cast<long>(millis() - mdnsRetryAt_) >= 0) startMdns();
+    if (!impl_->ssdp.running()) startSsdp();
     impl_->ssdp.loop();
+  } else {
+    if (mdnsStarted_) {
+      MDNS.end();
+      mdnsStarted_ = false;
+    }
+    mdnsRetryAt_ = 0;
+    stopSsdp();
   }
   syncAp(staConnected_);
 }
@@ -2892,11 +3043,11 @@ String WebUi::dhcpHostname() const {
   // underscores. Keep the stored name readable, but put a DNS/DHCP-safe form
   // on the wire (underscore -> hyphen).
   String wire = store_.data().hostname;
-  if (wire.isEmpty()) wire = "BambuStatusBar";
+  if (wire.isEmpty()) wire = kDefaultHostname;
   wire.replace('_', '-');
   if (wire.length() > 31) wire = wire.substring(0, 31);
   while (wire.endsWith("-")) wire.remove(wire.length() - 1);
-  if (wire.isEmpty()) wire = "BambuStatusBar";
+  if (wire.isEmpty()) wire = kDefaultHostname;
   return wire;
 }
 
@@ -2981,13 +3132,17 @@ void WebUi::syncAp(bool staUp) {
 }
 
 void WebUi::startMdns() {
-  // Match PandaStatusOS: advertise the DHCP-safe label (no underscores) as both
-  // hostname and instance, with _http._tcp on port 80.
+  // Advertise the DHCP-safe label (no underscores) as hostname and instance,
+  // with _http._tcp on port 80.
   const String host = dhcpHostname();
-  if (!MDNS.begin(host.c_str())) return;
+  if (!MDNS.begin(host.c_str())) {
+    mdnsRetryAt_ = millis() + 5000;
+    return;
+  }
   MDNS.setInstanceName(host.c_str());
   MDNS.addService("http", "tcp", 80);
   mdnsStarted_ = true;
+  mdnsRetryAt_ = 0;
   Serial.print(F("mDNS http://"));
   Serial.print(host);
   Serial.println(F(".local"));
@@ -3124,7 +3279,7 @@ void WebUi::notePrinterDatagram(const uint8_t* data, int len) {
     return;
   }
 
-  String ip = headerValue(text, "location");
+  String ip = httpHeaderValue(text, "location");
   ip.trim();
   IPAddress parsed;
   if (!parseIpv4(ip, parsed)) {
@@ -3137,7 +3292,7 @@ void WebUi::notePrinterDatagram(const uint8_t* data, int len) {
   }
   if (ip.isEmpty()) return;
 
-  String serial = headerValue(text, "usn");
+  String serial = httpHeaderValue(text, "usn");
   int sep = serial.indexOf("::");
   if (sep >= 0) serial = serial.substring(0, sep);
   serial.replace("uuid:", "");
@@ -3148,9 +3303,9 @@ void WebUi::notePrinterDatagram(const uint8_t* data, int len) {
     serial = "";
   }
 
-  String name = headerValue(text, "DevName.bambu.com");
-  if (name.isEmpty()) name = headerValue(text, "devname.bambu.com");
-  if (name.isEmpty()) name = headerValue(text, "devname");
+  String name = httpHeaderValue(text, "DevName.bambu.com");
+  if (name.isEmpty()) name = httpHeaderValue(text, "devname.bambu.com");
+  if (name.isEmpty()) name = httpHeaderValue(text, "devname");
 
   for (auto& existing : impl_->printers) {
     if (existing.ip == ip || (!serial.isEmpty() && existing.serial == serial)) {
@@ -3245,6 +3400,9 @@ void WebUi::handleStatus() {
   };
   leds["brightness"] = cfg.brightness;
   leds["speed"] = cfg.speed;
+  leds["pin"] = cfg.ledPin;
+  leds["count"] = cfg.ledCount;
+  leds["maxCount"] = hw::kMaxNumLeds;
   putSlot("idle", "idleEffect", cfg.idle);
   putSlot("print", "printEffect", cfg.printing);
   putSlot("error", "errorEffect", cfg.error);
@@ -3328,11 +3486,9 @@ void WebUi::handleHostname() {
     sendError(400, "bad-host");
     return;
   }
-  // Persist the DHCP-safe form so the UI and Fritzbox show the same name.
-  String wire = hostname;
-  wire.replace('_', '-');
-  store_.data().hostname = wire;
+  store_.data().hostname = hostname;
   store_.save();
+  // Persist raw name; dhcpHostname() sanitizes for the wire after reboot.
   sendOk(true);
   delay(250);
   ESP.restart();
@@ -3369,7 +3525,7 @@ void WebUi::handlePrinterScanPost() {
     bool bound = impl_->udp.begin(WiFi.localIP(), 2021);
     if (!bound) bound = impl_->udp.begin(2021);
     if (!bound) {
-      sendError(500, "bad-json");
+      sendError(500, "udp-bind");
       return;
     }
     printerScanRunning_ = true;
@@ -3408,6 +3564,18 @@ void WebUi::handleLeds() {
   int speed = doc["speed"].as<int>();
   if (brightness < 0 || brightness > 100 || speed < 1 || speed > 100) {
     sendError(400, "bad-leds");
+    return;
+  }
+  const bool hasPin = doc["pin"].is<int>();
+  const bool hasCount = doc["count"].is<int>();
+  int pin = hasPin ? doc["pin"].as<int>() : store_.data().ledPin;
+  int count = hasCount ? doc["count"].as<int>() : store_.data().ledCount;
+  if (hasPin && (pin < 0 || pin > 255 || !hw::isSupportedLedDataPin(static_cast<uint8_t>(pin)))) {
+    sendError(400, "bad-led-pin");
+    return;
+  }
+  if (hasCount && (count < 1 || count > static_cast<int>(hw::kMaxNumLeds))) {
+    sendError(400, "bad-led-count");
     return;
   }
 
@@ -3455,7 +3623,18 @@ void WebUi::handleLeds() {
   cfg.paused = paused;
   cfg.finished = finished;
   cfg.ledReverse = doc["reverse"].as<bool>();
+  const bool hwChanged =
+      (hasPin && static_cast<uint8_t>(pin) != cfg.ledPin) ||
+      (hasCount && static_cast<uint16_t>(count) != cfg.ledCount);
+  if (hasPin) cfg.ledPin = static_cast<uint8_t>(pin);
+  if (hasCount) cfg.ledCount = static_cast<uint16_t>(count);
   store_.save();
+  if (hwChanged) {
+    sendOk(true);
+    delay(250);
+    ESP.restart();
+    return;
+  }
   sendOk(false);
 }
 
@@ -3470,7 +3649,7 @@ void WebUi::handleAp() {
   JsonDocument doc;
   if (!readJson(doc)) return;
   if (!doc["enabled"].is<bool>()) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-request");
     return;
   }
   const char* ssid = doc["ssid"] | "";
@@ -3506,7 +3685,7 @@ void WebUi::handleLanguage() {
   if (!readJson(doc)) return;
   const char* language = doc["language"] | "";
   if (strcmp(language, "de") != 0 && strcmp(language, "en") != 0) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-lang");
     return;
   }
   store_.data().language = language;
@@ -3532,26 +3711,26 @@ void WebUi::handleUpdateCheck() {
   if (!info.error.isEmpty()) doc["error"] = info.error;
   String body;
   serializeJson(doc, body);
-  sendJson(info.ok || info.error == "no-wifi" || info.error == "no-release" ? 200 : 200, body);
+  sendJson(200, body);
 }
 
 void WebUi::handleUpdateGithub() {
   noteActivity();
   if (otaBusy_) {
-    sendError(409, "bad-json");
+    sendError(409, "ota-busy");
     return;
   }
   JsonDocument doc;
   if (!readJson(doc)) return;
   const char* url = doc["url"] | "";
   if (!url[0] || strncmp(url, "https://", 8) != 0) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-url");
     return;
   }
   // Only allow GitHub download hosts.
   String urlStr = url;
   if (urlStr.indexOf("github.com/") < 0 && urlStr.indexOf("githubusercontent.com/") < 0) {
-    sendError(400, "bad-json");
+    sendError(400, "bad-url");
     return;
   }
 
@@ -3572,7 +3751,7 @@ void WebUi::handleUpdateGithub() {
 void WebUi::handleNotFound() {
   String uri = impl_->server.uri();
   if (uri.startsWith("/api/")) {
-    sendError(404, "bad-json");
+    sendError(404, "not-found");
     return;
   }
   if (!apRunning_) {
@@ -3704,8 +3883,8 @@ void setup() {
   delay(200);
   pinMode(hw::kResetButtonPin, INPUT_PULLUP);
 
-  ledController.begin();
   web.begin();
+  ledController.begin(web.settings().ledPin, web.settings().ledCount);
   web.onOtaStart([]() { mqttClient.disconnect(); });
   esp_ota_mark_app_valid_cancel_rollback();
 
