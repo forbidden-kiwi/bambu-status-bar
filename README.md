@@ -27,8 +27,8 @@ First flash / recovery: `.pio/build/esp32c6/firmware.factory.bin`
 
 Releases are published from this repository. On the device web UI:
 
-1. **Firmware Update → Auf Update prüfen**
-2. If a newer tag is available → **Update installieren**
+1. **Firmware Update → Check for update**
+2. If a newer tag is available → **Install update**
 
 Release workflow: push a tag like `v1.0.1` (or run the *Release firmware*
 Action manually). The Action builds `esp32c6` and attaches `firmware.bin`.
