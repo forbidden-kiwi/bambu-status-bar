@@ -378,6 +378,8 @@ void WebUi::stopAp() {
 }
 
 void WebUi::syncAp(bool staUp) {
+  // Keep SoftAP off for the whole GitHub HTTPS window (RAM + cleaner DNS).
+  if (otaBusy_) return;
   bool want = store_.data().apEnabled || !staUp;
   if (want && apRunning_ && staUp && !channelAligned_) {
     int channel = WiFi.channel();
@@ -399,12 +401,24 @@ void WebUi::syncCaptiveDns(bool staUp) {
 }
 
 void WebUi::prepareGithubHttps() {
-  // Free the printer MQTT TLS session and anything else that fights mbedTLS /
-  // DNS before talking to api.github.com from a dedicated OTA task.
+  // Free MQTT TLS, pause SoftAP/captive DNS, and pin public resolvers so
+  // api.github.com can be reached reliably on ESP32-C6 AP+STA setups.
   if (onOtaStart_) onOtaStart_();
   stopSsdp();
-  if (apRunning_ && impl_) impl_->dns.stop();
-  delay(300);
+  if (impl_) impl_->dns.stop();
+  if (apRunning_) {
+    WiFi.softAPdisconnect(true);
+    apRunning_ = false;
+    apPausedForOta_ = true;
+  }
+  WiFi.setDNS(IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
+  delay(700);
+}
+
+void WebUi::finishGithubHttps() {
+  if (!apPausedForOta_) return;
+  apPausedForOta_ = false;
+  if (store_.data().apEnabled || !staConnected_) startAp();
 }
 
 void WebUi::pollBootUpdateCheck() {
@@ -442,6 +456,7 @@ void WebUi::finishBootUpdateCheck(bool ok, bool available, const String& latest,
   bootUpdateCheckDone_ = true;
   bootUpdateCheckRunning_ = false;
   otaBusy_ = false;
+  finishGithubHttps();
   Serial.print(F("Boot update check "));
   if (!ok) {
     Serial.println(F("failed"));
@@ -1049,7 +1064,7 @@ void WebUi::handleUpdateCheck() {
   otaBusy_ = true;
   prepareGithubHttps();
   const GithubReleaseInfo info = GithubOta::checkLatest();
-  otaBusy_ = false;
+  // finishBootUpdateCheck clears otaBusy_ and restores SoftAP.
   finishBootUpdateCheck(info.ok, info.ok && info.updateAvailable, info.latestVersion,
                          info.downloadUrl);
   JsonDocument doc;
@@ -1090,6 +1105,7 @@ void WebUi::handleUpdateGithub() {
   const bool ok = GithubOta::installFromUrl(urlStr, error);
   if (!ok) {
     otaBusy_ = false;
+    finishGithubHttps();
     sendError(500, error.c_str());
     return;
   }

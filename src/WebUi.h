@@ -46,6 +46,7 @@ class WebUi {
   void syncAp(bool staUp);
   void syncCaptiveDns(bool staUp);
   void prepareGithubHttps();
+  void finishGithubHttps();
   void pollBootUpdateCheck();
   void finishBootUpdateCheck(bool ok, bool available, const String& latest, const String& url);
   static void bootUpdateCheckTask(void* arg);
@@ -114,6 +115,7 @@ class WebUi {
   bool bootUpdateCheckDone_ = false;
   bool bootUpdateCheckRunning_ = false;
   bool updateAvailable_ = false;
+  bool apPausedForOta_ = false;
   unsigned long staUpSinceMs_ = 0;
   String latestVersion_;
   String updateUrl_;

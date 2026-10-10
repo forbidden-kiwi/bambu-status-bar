@@ -17,6 +17,7 @@
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <lwip/netdb.h>
 #include <AsyncUDP.h>
 #include <cstdio>
 #include <DNSServer.h>
@@ -30,7 +31,7 @@
 
 // ==== Config.h ====
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.6";
+constexpr const char* kFirmwareVersion = "1.0.7";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
@@ -1648,10 +1649,9 @@ class GithubOta {
 // ==== GithubOta.cpp ====
 namespace {
 constexpr const char* kUserAgent = "BambuStatusBar-OTA";
-// ESP-IDF xTaskCreate stack size is in bytes. mbedTLS needs far more than the
-// WebServer request path provides on the Arduino loop task.
-constexpr uint32_t kTlsTaskStackBytes = 24576;
-constexpr uint32_t kCheckTimeoutMs = 45000;
+// Heap-backed TLS + HTTP on a dedicated task. Stack only holds locals/control.
+constexpr uint32_t kTlsTaskStackBytes = 32768;
+constexpr uint32_t kCheckTimeoutMs = 60000;
 constexpr uint32_t kInstallTimeoutMs = 300000;
 
 struct SemVer {
@@ -1707,34 +1707,92 @@ void setHttpError(String& errorOut, HTTPClient& http, int code) {
   errorOut = (code < 0) ? String("http-connect") : (String("http-") + code);
 }
 
-void prepareSecureClient(WiFiClientSecure& client, uint32_t handshakeSec, uint32_t timeoutMs) {
-  client.setInsecure();
-  client.setHandshakeTimeout(handshakeSec);
-  client.setTimeout(timeoutMs);
+void preferPublicDns() {
+  // Fritzbox / captive DNS can fail for public names; pin resolvers for OTA.
+  WiFi.setDNS(IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
 }
 
-bool httpGetToString(const String& url, String& body, String& errorOut) {
-  WiFiClientSecure client;
-  prepareSecureClient(client, 20, 25000);
+bool resolveIpv4(const char* host, IPAddress& out) {
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo* res = nullptr;
+  const int err = getaddrinfo(host, nullptr, &hints, &res);
+  if (err != 0 || !res) {
+    Serial.print(F("OTA getaddrinfo failed "));
+    Serial.println(err);
+    return false;
+  }
+  const auto* sin = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+  out = IPAddress(sin->sin_addr.s_addr);
+  freeaddrinfo(res);
+  return true;
+}
+
+WiFiClientSecure* makeSecureClient(uint32_t handshakeSec, uint32_t timeoutMs) {
+  // Heap allocation: SSL state is too large for the task stack.
+  auto* client = new WiFiClientSecure();
+  if (!client) return nullptr;
+  client->setInsecure();
+  client->setHandshakeTimeout(handshakeSec);
+  client->setTimeout(timeoutMs);
+  return client;
+}
+
+bool httpGetToString(const char* host, const String& uri, String& body, String& errorOut) {
+  preferPublicDns();
+
+  IPAddress ip;
+  if (!resolveIpv4(host, ip)) {
+    // Fall back to Arduino helper (may return IPv6 on some stacks).
+    if (!WiFi.hostByName(host, ip)) {
+      errorOut = "http-connect";
+      return false;
+    }
+  }
+  Serial.print(F("OTA DNS "));
+  Serial.print(host);
+  Serial.print(F(" -> "));
+  Serial.println(ip);
+
+  WiFiClientSecure* client = makeSecureClient(25, 30000);
+  if (!client) {
+    errorOut = "http-connect";
+    return false;
+  }
+
+  // Dial IPv4 with SNI hostname (avoids broken AAAA paths on some routers).
+  if (!client->connect(ip, 443, host, nullptr, nullptr, nullptr)) {
+    Serial.println(F("OTA TLS connect failed"));
+    delete client;
+    errorOut = "http-connect";
+    return false;
+  }
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(25000);
-  if (!http.begin(client, url)) {
+  http.setTimeout(30000);
+  if (!http.begin(*client, host, 443, uri, /*https=*/true)) {
     errorOut = "http-begin";
+    http.end();
+    delete client;
     return false;
   }
   http.addHeader("Accept", "application/vnd.github+json");
+
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     setHttpError(errorOut, http, code);
     http.end();
+    delete client;
     return false;
   }
   body = http.getString();
   http.end();
+  delete client;
   return true;
 }
 
@@ -1747,20 +1805,13 @@ GithubReleaseInfo checkLatestImpl() {
     return info;
   }
 
-  // Fail fast with a clear log if DNS is broken (captive portal / AP+STA).
-  IPAddress githubIp;
-  if (!WiFi.hostByName("api.github.com", githubIp)) {
-    Serial.println(F("OTA DNS api.github.com failed"));
-    info.error = "http-connect";
-    return info;
-  }
-  Serial.print(F("OTA DNS api.github.com -> "));
-  Serial.println(githubIp);
+  Serial.print(F("OTA check heap="));
+  Serial.println(ESP.getFreeHeap());
 
-  String url = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo +
-               "/releases/latest";
+  const String uri =
+      String("/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases/latest";
   String body;
-  if (!httpGetToString(url, body, info.error)) return info;
+  if (!httpGetToString("api.github.com", uri, body, info.error)) return info;
 
   JsonDocument doc;
   if (deserializeJson(doc, body)) {
@@ -1815,16 +1866,22 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
     return false;
   }
 
-  WiFiClientSecure client;
-  prepareSecureClient(client, 30, 60000);
+  preferPublicDns();
+
+  WiFiClientSecure* client = makeSecureClient(30, 60000);
+  if (!client) {
+    errorOut = "http-connect";
+    return false;
+  }
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
   http.setTimeout(60000);
-  if (!http.begin(client, downloadUrl)) {
+  if (!http.begin(*client, downloadUrl)) {
     errorOut = "http-begin";
+    delete client;
     return false;
   }
 
@@ -1832,6 +1889,7 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
   if (code != HTTP_CODE_OK) {
     setHttpError(errorOut, http, code);
     http.end();
+    delete client;
     return false;
   }
 
@@ -1840,6 +1898,7 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
   if (!Update.begin(contentLength > 0 ? contentLength : UPDATE_SIZE_UNKNOWN)) {
     errorOut = "update-begin";
     http.end();
+    delete client;
     return false;
   }
 
@@ -1848,18 +1907,20 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
     Update.abort();
     errorOut = "short-write";
     http.end();
+    delete client;
     return false;
   }
   if (!Update.end(true)) {
     errorOut = "update-end";
     http.end();
+    delete client;
     return false;
   }
   http.end();
+  delete client;
   return true;
 }
 
-// Shared job state lives in BSS so a timed-out waiter cannot free stack under the task.
 GithubReleaseInfo s_checkResult;
 volatile bool s_checkDone = false;
 
@@ -1874,7 +1935,8 @@ void checkTask(void* /*arg*/) {
     if (s_checkResult.ok || s_checkResult.error == "no-wifi") break;
     Serial.print(F("OTA check retry "));
     Serial.println(attempt + 1);
-    vTaskDelay(pdMS_TO_TICKS(500 * (attempt + 1)));
+    preferPublicDns();
+    vTaskDelay(pdMS_TO_TICKS(800 * (attempt + 1)));
   }
   s_checkDone = true;
   vTaskDelete(nullptr);
@@ -1903,7 +1965,6 @@ GithubReleaseInfo GithubOta::checkLatest() {
   s_checkResult.currentVersion = kFirmwareVersion;
 
   if (xTaskCreate(checkTask, "ghCheck", kTlsTaskStackBytes, nullptr, 1, nullptr) != pdPASS) {
-    // Fall back to the caller stack if the task cannot be created.
     return checkLatestImpl();
   }
   if (!waitFlag(s_checkDone, kCheckTimeoutMs)) {
@@ -2170,7 +2231,6 @@ input:focus,select:focus{border-color:#4d86c7;box-shadow:0 0 0 3px rgba(77,134,1
 input[type=color]{min-height:54px;padding:6px 10px;background:#0c131b}
 input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;background:#1e3347;border-radius:3px;border:none;padding:0;cursor:pointer}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:18px;height:18px;border-radius:50%;background:#94a3b8}
-input[type=checkbox]{width:auto}
 button{border:none;border-radius:999px;padding:13px 18px;font-weight:700;cursor:pointer;font:inherit}
 button:disabled{opacity:.65;cursor:wait}
 button.primary{background:linear-gradient(135deg,#f0a64b,#ffd07a);color:#1b1203}
@@ -2223,7 +2283,13 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
 .light-rows{display:grid;gap:12px;margin-top:8px}
 .light-row{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px;align-items:end}
 @media(max-width:640px){.light-row{grid-template-columns:1fr}}
-.check{display:flex;align-items:center;gap:10px;margin:0}
+.check{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0;padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:#0f1721;cursor:pointer}
+.check>span{flex:1;min-width:0;font-size:14px;font-weight:600;color:#d5e1ed;line-height:1.35}
+.check input[type=checkbox]{appearance:none;-webkit-appearance:none;width:46px;height:28px;flex:0 0 auto;margin:0;padding:0;border-radius:999px;border:1px solid #34506e;background:#1a2836;position:relative;cursor:pointer;transition:background .2s ease,border-color .2s ease,box-shadow .2s ease}
+.check input[type=checkbox]::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#94a3b8;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:transform .2s ease,background .2s ease}
+.check input[type=checkbox]:checked{background:linear-gradient(135deg,#f0a64b,#ffd07a);border-color:#c48a3a}
+.check input[type=checkbox]:checked::after{transform:translateX(18px);background:#1b1203}
+.check input[type=checkbox]:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(240,166,75,.28)}
 .status-line{font-size:16px;font-weight:700}
 .status-detail{color:var(--muted)}
 .printer-card{padding:16px 18px;border-radius:18px;border:1px solid var(--line);background:#0f1721;display:grid;gap:8px;margin-bottom:10px;cursor:pointer;text-align:left;width:100%;color:inherit;font:inherit}
@@ -2329,8 +2395,8 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
       <div class="field"><label for="ledCount" data-i="light_count">LED count</label><input id="ledCount" type="number" min="1" max="64" step="1" value="18"></div>
     </div>
     <p class="micro" data-i="light_hw_hint">Pin or count changes reboot the device so FastLED can re-init.</p>
-    <label class="check"><input id="ledReverse" type="checkbox"> <span data-i="light_reverse">Reverse LED direction</span></label>
-    <label class="check"><input id="followChamberLight" type="checkbox"> <span data-i="light_follow_chamber">Follow printer chamber light</span></label>
+    <label class="check"><span data-i="light_reverse">Reverse LED direction</span><input id="ledReverse" type="checkbox"></label>
+    <label class="check"><span data-i="light_follow_chamber">Follow printer chamber light</span><input id="followChamberLight" type="checkbox"></label>
     <p class="micro" id="chamberLightHint">When enabled, the status bar turns off while the printer chamber light is off.</p>
     <div class="light-rows" id="lightStates"></div>
     <div class="actions"><button type="button" class="secondary" id="lightReset" data-i="light_reset">Reset Colors</button></div>
@@ -2344,7 +2410,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     <div class="section-summary-side"><span class="summary-pill idle" id="apPill">…</span><span class="section-toggle-icon"></span></div>
   </summary>
   <div class="section-body">
-    <label class="check"><input id="apEnabled" type="checkbox"> <span data-i="ap_enable">Keep hotspot enabled when Wi-Fi is up</span></label>
+    <label class="check"><span data-i="ap_enable">Keep hotspot enabled when Wi-Fi is up</span><input id="apEnabled" type="checkbox"></label>
     <div class="grid-2">
       <div class="field"><label for="apSsid" data-i="ap_ssid">Hotspot Name</label><input id="apSsid" maxlength="32" autocapitalize="off"></div>
       <div class="field"><label for="apPass" data-i="ap_pass">Hotspot Password</label><input id="apPass" maxlength="64" autocomplete="off"></div>
@@ -2900,6 +2966,7 @@ class WebUi {
   void syncAp(bool staUp);
   void syncCaptiveDns(bool staUp);
   void prepareGithubHttps();
+  void finishGithubHttps();
   void pollBootUpdateCheck();
   void finishBootUpdateCheck(bool ok, bool available, const String& latest, const String& url);
   static void bootUpdateCheckTask(void* arg);
@@ -2968,6 +3035,7 @@ class WebUi {
   bool bootUpdateCheckDone_ = false;
   bool bootUpdateCheckRunning_ = false;
   bool updateAvailable_ = false;
+  bool apPausedForOta_ = false;
   unsigned long staUpSinceMs_ = 0;
   String latestVersion_;
   String updateUrl_;
@@ -3343,6 +3411,8 @@ void WebUi::stopAp() {
 }
 
 void WebUi::syncAp(bool staUp) {
+  // Keep SoftAP off for the whole GitHub HTTPS window (RAM + cleaner DNS).
+  if (otaBusy_) return;
   bool want = store_.data().apEnabled || !staUp;
   if (want && apRunning_ && staUp && !channelAligned_) {
     int channel = WiFi.channel();
@@ -3364,12 +3434,24 @@ void WebUi::syncCaptiveDns(bool staUp) {
 }
 
 void WebUi::prepareGithubHttps() {
-  // Free the printer MQTT TLS session and anything else that fights mbedTLS /
-  // DNS before talking to api.github.com from a dedicated OTA task.
+  // Free MQTT TLS, pause SoftAP/captive DNS, and pin public resolvers so
+  // api.github.com can be reached reliably on ESP32-C6 AP+STA setups.
   if (onOtaStart_) onOtaStart_();
   stopSsdp();
-  if (apRunning_ && impl_) impl_->dns.stop();
-  delay(300);
+  if (impl_) impl_->dns.stop();
+  if (apRunning_) {
+    WiFi.softAPdisconnect(true);
+    apRunning_ = false;
+    apPausedForOta_ = true;
+  }
+  WiFi.setDNS(IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
+  delay(700);
+}
+
+void WebUi::finishGithubHttps() {
+  if (!apPausedForOta_) return;
+  apPausedForOta_ = false;
+  if (store_.data().apEnabled || !staConnected_) startAp();
 }
 
 void WebUi::pollBootUpdateCheck() {
@@ -3407,6 +3489,7 @@ void WebUi::finishBootUpdateCheck(bool ok, bool available, const String& latest,
   bootUpdateCheckDone_ = true;
   bootUpdateCheckRunning_ = false;
   otaBusy_ = false;
+  finishGithubHttps();
   Serial.print(F("Boot update check "));
   if (!ok) {
     Serial.println(F("failed"));
@@ -4014,7 +4097,7 @@ void WebUi::handleUpdateCheck() {
   otaBusy_ = true;
   prepareGithubHttps();
   const GithubReleaseInfo info = GithubOta::checkLatest();
-  otaBusy_ = false;
+  // finishBootUpdateCheck clears otaBusy_ and restores SoftAP.
   finishBootUpdateCheck(info.ok, info.ok && info.updateAvailable, info.latestVersion,
                          info.downloadUrl);
   JsonDocument doc;
@@ -4055,6 +4138,7 @@ void WebUi::handleUpdateGithub() {
   const bool ok = GithubOta::installFromUrl(urlStr, error);
   if (!ok) {
     otaBusy_ = false;
+    finishGithubHttps();
     sendError(500, error.c_str());
     return;
   }

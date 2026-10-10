@@ -11,13 +11,13 @@
 #include <cstring>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <lwip/netdb.h>
 
 namespace {
 constexpr const char* kUserAgent = "BambuStatusBar-OTA";
-// ESP-IDF xTaskCreate stack size is in bytes. mbedTLS needs far more than the
-// WebServer request path provides on the Arduino loop task.
-constexpr uint32_t kTlsTaskStackBytes = 24576;
-constexpr uint32_t kCheckTimeoutMs = 45000;
+// Heap-backed TLS + HTTP on a dedicated task. Stack only holds locals/control.
+constexpr uint32_t kTlsTaskStackBytes = 32768;
+constexpr uint32_t kCheckTimeoutMs = 60000;
 constexpr uint32_t kInstallTimeoutMs = 300000;
 
 struct SemVer {
@@ -73,34 +73,92 @@ void setHttpError(String& errorOut, HTTPClient& http, int code) {
   errorOut = (code < 0) ? String("http-connect") : (String("http-") + code);
 }
 
-void prepareSecureClient(WiFiClientSecure& client, uint32_t handshakeSec, uint32_t timeoutMs) {
-  client.setInsecure();
-  client.setHandshakeTimeout(handshakeSec);
-  client.setTimeout(timeoutMs);
+void preferPublicDns() {
+  // Fritzbox / captive DNS can fail for public names; pin resolvers for OTA.
+  WiFi.setDNS(IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
 }
 
-bool httpGetToString(const String& url, String& body, String& errorOut) {
-  WiFiClientSecure client;
-  prepareSecureClient(client, 20, 25000);
+bool resolveIpv4(const char* host, IPAddress& out) {
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo* res = nullptr;
+  const int err = getaddrinfo(host, nullptr, &hints, &res);
+  if (err != 0 || !res) {
+    Serial.print(F("OTA getaddrinfo failed "));
+    Serial.println(err);
+    return false;
+  }
+  const auto* sin = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+  out = IPAddress(sin->sin_addr.s_addr);
+  freeaddrinfo(res);
+  return true;
+}
+
+WiFiClientSecure* makeSecureClient(uint32_t handshakeSec, uint32_t timeoutMs) {
+  // Heap allocation: SSL state is too large for the task stack.
+  auto* client = new WiFiClientSecure();
+  if (!client) return nullptr;
+  client->setInsecure();
+  client->setHandshakeTimeout(handshakeSec);
+  client->setTimeout(timeoutMs);
+  return client;
+}
+
+bool httpGetToString(const char* host, const String& uri, String& body, String& errorOut) {
+  preferPublicDns();
+
+  IPAddress ip;
+  if (!resolveIpv4(host, ip)) {
+    // Fall back to Arduino helper (may return IPv6 on some stacks).
+    if (!WiFi.hostByName(host, ip)) {
+      errorOut = "http-connect";
+      return false;
+    }
+  }
+  Serial.print(F("OTA DNS "));
+  Serial.print(host);
+  Serial.print(F(" -> "));
+  Serial.println(ip);
+
+  WiFiClientSecure* client = makeSecureClient(25, 30000);
+  if (!client) {
+    errorOut = "http-connect";
+    return false;
+  }
+
+  // Dial IPv4 with SNI hostname (avoids broken AAAA paths on some routers).
+  if (!client->connect(ip, 443, host, nullptr, nullptr, nullptr)) {
+    Serial.println(F("OTA TLS connect failed"));
+    delete client;
+    errorOut = "http-connect";
+    return false;
+  }
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(25000);
-  if (!http.begin(client, url)) {
+  http.setTimeout(30000);
+  if (!http.begin(*client, host, 443, uri, /*https=*/true)) {
     errorOut = "http-begin";
+    http.end();
+    delete client;
     return false;
   }
   http.addHeader("Accept", "application/vnd.github+json");
+
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     setHttpError(errorOut, http, code);
     http.end();
+    delete client;
     return false;
   }
   body = http.getString();
   http.end();
+  delete client;
   return true;
 }
 
@@ -113,20 +171,13 @@ GithubReleaseInfo checkLatestImpl() {
     return info;
   }
 
-  // Fail fast with a clear log if DNS is broken (captive portal / AP+STA).
-  IPAddress githubIp;
-  if (!WiFi.hostByName("api.github.com", githubIp)) {
-    Serial.println(F("OTA DNS api.github.com failed"));
-    info.error = "http-connect";
-    return info;
-  }
-  Serial.print(F("OTA DNS api.github.com -> "));
-  Serial.println(githubIp);
+  Serial.print(F("OTA check heap="));
+  Serial.println(ESP.getFreeHeap());
 
-  String url = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo +
-               "/releases/latest";
+  const String uri =
+      String("/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases/latest";
   String body;
-  if (!httpGetToString(url, body, info.error)) return info;
+  if (!httpGetToString("api.github.com", uri, body, info.error)) return info;
 
   JsonDocument doc;
   if (deserializeJson(doc, body)) {
@@ -181,16 +232,22 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
     return false;
   }
 
-  WiFiClientSecure client;
-  prepareSecureClient(client, 30, 60000);
+  preferPublicDns();
+
+  WiFiClientSecure* client = makeSecureClient(30, 60000);
+  if (!client) {
+    errorOut = "http-connect";
+    return false;
+  }
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
   http.setTimeout(60000);
-  if (!http.begin(client, downloadUrl)) {
+  if (!http.begin(*client, downloadUrl)) {
     errorOut = "http-begin";
+    delete client;
     return false;
   }
 
@@ -198,6 +255,7 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
   if (code != HTTP_CODE_OK) {
     setHttpError(errorOut, http, code);
     http.end();
+    delete client;
     return false;
   }
 
@@ -206,6 +264,7 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
   if (!Update.begin(contentLength > 0 ? contentLength : UPDATE_SIZE_UNKNOWN)) {
     errorOut = "update-begin";
     http.end();
+    delete client;
     return false;
   }
 
@@ -214,18 +273,20 @@ bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
     Update.abort();
     errorOut = "short-write";
     http.end();
+    delete client;
     return false;
   }
   if (!Update.end(true)) {
     errorOut = "update-end";
     http.end();
+    delete client;
     return false;
   }
   http.end();
+  delete client;
   return true;
 }
 
-// Shared job state lives in BSS so a timed-out waiter cannot free stack under the task.
 GithubReleaseInfo s_checkResult;
 volatile bool s_checkDone = false;
 
@@ -240,7 +301,8 @@ void checkTask(void* /*arg*/) {
     if (s_checkResult.ok || s_checkResult.error == "no-wifi") break;
     Serial.print(F("OTA check retry "));
     Serial.println(attempt + 1);
-    vTaskDelay(pdMS_TO_TICKS(500 * (attempt + 1)));
+    preferPublicDns();
+    vTaskDelay(pdMS_TO_TICKS(800 * (attempt + 1)));
   }
   s_checkDone = true;
   vTaskDelete(nullptr);
@@ -269,7 +331,6 @@ GithubReleaseInfo GithubOta::checkLatest() {
   s_checkResult.currentVersion = kFirmwareVersion;
 
   if (xTaskCreate(checkTask, "ghCheck", kTlsTaskStackBytes, nullptr, 1, nullptr) != pdPASS) {
-    // Fall back to the caller stack if the task cannot be created.
     return checkLatestImpl();
   }
   if (!waitFlag(s_checkDone, kCheckTimeoutMs)) {

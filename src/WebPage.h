@@ -19,7 +19,6 @@ input:focus,select:focus{border-color:#4d86c7;box-shadow:0 0 0 3px rgba(77,134,1
 input[type=color]{min-height:54px;padding:6px 10px;background:#0c131b}
 input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;background:#1e3347;border-radius:3px;border:none;padding:0;cursor:pointer}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:18px;height:18px;border-radius:50%;background:#94a3b8}
-input[type=checkbox]{width:auto}
 button{border:none;border-radius:999px;padding:13px 18px;font-weight:700;cursor:pointer;font:inherit}
 button:disabled{opacity:.65;cursor:wait}
 button.primary{background:linear-gradient(135deg,#f0a64b,#ffd07a);color:#1b1203}
@@ -72,7 +71,13 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
 .light-rows{display:grid;gap:12px;margin-top:8px}
 .light-row{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px;align-items:end}
 @media(max-width:640px){.light-row{grid-template-columns:1fr}}
-.check{display:flex;align-items:center;gap:10px;margin:0}
+.check{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0;padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:#0f1721;cursor:pointer}
+.check>span{flex:1;min-width:0;font-size:14px;font-weight:600;color:#d5e1ed;line-height:1.35}
+.check input[type=checkbox]{appearance:none;-webkit-appearance:none;width:46px;height:28px;flex:0 0 auto;margin:0;padding:0;border-radius:999px;border:1px solid #34506e;background:#1a2836;position:relative;cursor:pointer;transition:background .2s ease,border-color .2s ease,box-shadow .2s ease}
+.check input[type=checkbox]::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#94a3b8;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:transform .2s ease,background .2s ease}
+.check input[type=checkbox]:checked{background:linear-gradient(135deg,#f0a64b,#ffd07a);border-color:#c48a3a}
+.check input[type=checkbox]:checked::after{transform:translateX(18px);background:#1b1203}
+.check input[type=checkbox]:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(240,166,75,.28)}
 .status-line{font-size:16px;font-weight:700}
 .status-detail{color:var(--muted)}
 .printer-card{padding:16px 18px;border-radius:18px;border:1px solid var(--line);background:#0f1721;display:grid;gap:8px;margin-bottom:10px;cursor:pointer;text-align:left;width:100%;color:inherit;font:inherit}
@@ -178,8 +183,8 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
       <div class="field"><label for="ledCount" data-i="light_count">LED count</label><input id="ledCount" type="number" min="1" max="64" step="1" value="18"></div>
     </div>
     <p class="micro" data-i="light_hw_hint">Pin or count changes reboot the device so FastLED can re-init.</p>
-    <label class="check"><input id="ledReverse" type="checkbox"> <span data-i="light_reverse">Reverse LED direction</span></label>
-    <label class="check"><input id="followChamberLight" type="checkbox"> <span data-i="light_follow_chamber">Follow printer chamber light</span></label>
+    <label class="check"><span data-i="light_reverse">Reverse LED direction</span><input id="ledReverse" type="checkbox"></label>
+    <label class="check"><span data-i="light_follow_chamber">Follow printer chamber light</span><input id="followChamberLight" type="checkbox"></label>
     <p class="micro" id="chamberLightHint">When enabled, the status bar turns off while the printer chamber light is off.</p>
     <div class="light-rows" id="lightStates"></div>
     <div class="actions"><button type="button" class="secondary" id="lightReset" data-i="light_reset">Reset Colors</button></div>
@@ -193,7 +198,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     <div class="section-summary-side"><span class="summary-pill idle" id="apPill">…</span><span class="section-toggle-icon"></span></div>
   </summary>
   <div class="section-body">
-    <label class="check"><input id="apEnabled" type="checkbox"> <span data-i="ap_enable">Keep hotspot enabled when Wi-Fi is up</span></label>
+    <label class="check"><span data-i="ap_enable">Keep hotspot enabled when Wi-Fi is up</span><input id="apEnabled" type="checkbox"></label>
     <div class="grid-2">
       <div class="field"><label for="apSsid" data-i="ap_ssid">Hotspot Name</label><input id="apSsid" maxlength="32" autocapitalize="off"></div>
       <div class="field"><label for="apPass" data-i="ap_pass">Hotspot Password</label><input id="apPass" maxlength="64" autocomplete="off"></div>
