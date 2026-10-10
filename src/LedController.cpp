@@ -297,7 +297,8 @@ void LedController::render(SystemState state, const PrinterTelemetry& telemetry,
     state = SystemState::Idle;
   }
 
-  if (asleep_ && state == SystemState::Idle) {
+  // asleep_ covers standby idle and optional chamber-light follow (any state).
+  if (asleep_) {
     showBlack();
     return;
   }

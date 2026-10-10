@@ -175,8 +175,10 @@ void loop() {
     asleep = true;
   }
   // Optional: printer chamber_light drives the bar (one-way). Unknown = leave on.
+  // Error still lights the bar so faults stay visible with the chamber light off.
   bool barOff = asleep;
-  if (cfg.followChamberLight && printerState.haveChamberLight() && !printerState.chamberLightOn()) {
+  if (cfg.followChamberLight && printerState.haveChamberLight() && !printerState.chamberLightOn() &&
+      shown != SystemState::Error) {
     barOff = true;
   }
   ledController.setAsleep(barOff);

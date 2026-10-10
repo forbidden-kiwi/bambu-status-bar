@@ -1186,7 +1186,8 @@ void LedController::render(SystemState state, const PrinterTelemetry& telemetry,
     state = SystemState::Idle;
   }
 
-  if (asleep_ && state == SystemState::Idle) {
+  // asleep_ covers standby idle and optional chamber-light follow (any state).
+  if (asleep_) {
     showBlack();
     return;
   }
@@ -2501,7 +2502,7 @@ light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"An
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"LED-Richtung umkehren",
 light_follow_chamber:"Mit Drucker-Chamber-Licht synchronisieren",
-light_follow_hint:"Wenn aktiv, bleibt die Statusleiste aus, solange das Chamber-Licht am Drucker aus ist.",
+light_follow_hint:"Wenn aktiv, bleibt die Statusleiste aus, solange das Chamber-Licht am Drucker aus ist (Fehler leuchtet weiter).",
 light_chamber_state:"Chamber-Licht",
 light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
 light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
@@ -2570,7 +2571,7 @@ light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"An
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"Reverse LED direction",
 light_follow_chamber:"Follow printer chamber light",
-light_follow_hint:"When enabled, the status bar turns off while the printer chamber light is off.",
+light_follow_hint:"When enabled, the status bar turns off while the printer chamber light is off (errors still light up).",
 light_chamber_state:"Chamber light",
 light_pin:"LED data pin (GPIO)",light_count:"LED count",
 light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
@@ -4342,8 +4343,10 @@ void loop() {
     asleep = true;
   }
   // Optional: printer chamber_light drives the bar (one-way). Unknown = leave on.
+  // Error still lights the bar so faults stay visible with the chamber light off.
   bool barOff = asleep;
-  if (cfg.followChamberLight && printerState.haveChamberLight() && !printerState.chamberLightOn()) {
+  if (cfg.followChamberLight && printerState.haveChamberLight() && !printerState.chamberLightOn() &&
+      shown != SystemState::Error) {
     barOff = true;
   }
   ledController.setAsleep(barOff);
