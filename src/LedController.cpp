@@ -1,0 +1,291 @@
+#include "LedController.h"
+
+namespace {
+uint8_t brightnessToPwm(uint8_t percent) {
+  if (percent > 100) percent = 100;
+  return static_cast<uint8_t>((static_cast<uint16_t>(percent) * 255) / 100);
+}
+}  // namespace
+
+void LedController::begin() {
+  FastLED.addLeds<WS2812B, hw::kDataPin, GRB>(leds_, hw::kNumLeds);
+  FastLED.setMaxPowerInMilliWatts(hw::kMaxMilliwatts);
+  FastLED.setBrightness(brightnessToPwm(style_.brightness));
+  FastLED.clear(true);
+}
+
+void LedController::setStyle(const LedStyle& style) {
+  style_ = style;
+  if (style_.speed < 1) style_.speed = 1;
+  if (style_.speed > 100) style_.speed = 100;
+  if (style_.brightness > 100) style_.brightness = 100;
+  auto clampSlot = [](LedStyleSlot& slot, LedEffect fallback) {
+    slot.effect = clampLedEffect(static_cast<uint8_t>(slot.effect), fallback);
+  };
+  clampSlot(style_.idle, LedEffect::Pulse);
+  clampSlot(style_.printing, LedEffect::Progress);
+  clampSlot(style_.error, LedEffect::Strobe);
+  clampSlot(style_.homing, LedEffect::Comet);
+  clampSlot(style_.leveling, LedEffect::Comet);
+  clampSlot(style_.preparing, LedEffect::Comet);
+  clampSlot(style_.heating, LedEffect::Progress);
+  clampSlot(style_.downloading, LedEffect::Comet);
+  clampSlot(style_.paused, LedEffect::Pulse);
+  clampSlot(style_.finished, LedEffect::Solid);
+  FastLED.setBrightness(brightnessToPwm(style_.brightness));
+}
+
+uint16_t LedController::scaled(uint16_t baseMs) const {
+  uint8_t speed = style_.speed < 1 ? 1 : style_.speed;
+  uint32_t period = (static_cast<uint32_t>(baseMs) * 50) / speed;
+  if (period < 16) period = 16;
+  if (period > 20000) period = 20000;
+  return static_cast<uint16_t>(period);
+}
+
+void LedController::showLeds() {
+  if (style_.reverse) {
+    for (int i = 0, j = hw::kNumLeds - 1; i < j; ++i, --j) {
+      CRGB tmp = leds_[i];
+      leds_[i] = leds_[j];
+      leds_[j] = tmp;
+    }
+  }
+  FastLED.show();
+  // Restore logical order so stateful effects (sparkle/fire) keep working.
+  if (style_.reverse) {
+    for (int i = 0, j = hw::kNumLeds - 1; i < j; ++i, --j) {
+      CRGB tmp = leds_[i];
+      leds_[i] = leds_[j];
+      leds_[j] = tmp;
+    }
+  }
+}
+
+void LedController::showBlack() {
+  fill_solid(leds_, hw::kNumLeds, CRGB::Black);
+  showLeds();
+}
+
+void LedController::renderSolid(CRGB color) {
+  fill_solid(leds_, hw::kNumLeds, color);
+  showLeds();
+}
+
+void LedController::renderProgressBar(CRGB onColor, CRGB offColor, uint8_t percent) {
+  int onLeds = static_cast<int>(hw::kNumLeds * (percent / 100.0f) + 0.5f);
+  for (int i = 0; i < hw::kNumLeds; i++) {
+    leds_[i] = (i < onLeds) ? onColor : offColor;
+  }
+  showLeds();
+}
+
+void LedController::renderHeating(uint8_t percent) {
+  int lit = static_cast<int>(hw::kNumLeds * (percent / 100.0f) + 0.5f);
+  fill_solid(leds_, hw::kNumLeds, CRGB(30, 0, 0));
+  for (int i = 0; i < lit; i++) {
+    leds_[i] = CRGB(map(i, 0, max(lit - 1, 1), 64, 255), map(i, 0, max(lit - 1, 1), 21, 85), 0);
+  }
+  showLeds();
+}
+
+void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs) {
+  static int pos = 0;
+  static int dir = 1;
+  static unsigned long lastStep = 0;
+  if (nowMs - lastStep > stepMs) {
+    lastStep = nowMs;
+    pos += dir;
+    if (pos >= hw::kNumLeds - 1) dir = -1;
+    if (pos <= 0) dir = 1;
+  }
+  fill_solid(leds_, hw::kNumLeds, CRGB::Black);
+  for (int tail = 0; tail < 4; tail++) {
+    int idx = pos - tail * dir;
+    if (idx >= 0 && idx < hw::kNumLeds) leds_[idx] = color / (1 << tail);
+  }
+  showLeds();
+}
+
+void LedController::renderWave(unsigned long nowMs, uint8_t hue) {
+  float speed = style_.speed / 50.0f;
+  float phase = nowMs * 0.002f * speed;
+  for (int i = 0; i < hw::kNumLeds; i++) {
+    uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
+    leds_[i] = CHSV(hue, 255, v);
+  }
+  showLeds();
+}
+
+void LedController::renderWaveColor(CRGB color, unsigned long nowMs) {
+  // Scale the chosen RGB color — do not force HSV sat=255 (white → hue 0 = red).
+  float speed = style_.speed / 50.0f;
+  float phase = nowMs * 0.002f * speed;
+  for (int i = 0; i < hw::kNumLeds; i++) {
+    uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
+    CRGB lit = color;
+    lit.nscale8(v);
+    leds_[i] = lit;
+  }
+  showLeds();
+}
+
+void LedController::renderPulse(CRGB color, unsigned long nowMs, uint16_t periodMs) {
+  uint16_t t = nowMs % periodMs;
+  float phase = (t < periodMs / 2) ? (t / static_cast<float>(periodMs / 2))
+                                    : (1.0f - (t - periodMs / 2) / static_cast<float>(periodMs / 2));
+  CRGB col = color;
+  col.nscale8(static_cast<uint8_t>(32 + phase * 223));
+  fill_solid(leds_, hw::kNumLeds, col);
+  showLeds();
+}
+
+void LedController::renderStrobe(CRGB color, unsigned long nowMs, uint16_t onMs, uint16_t offMs) {
+  uint16_t t = nowMs % (onMs + offMs);
+  fill_solid(leds_, hw::kNumLeds, t < onMs ? color : CRGB::Black);
+  showLeds();
+}
+
+void LedController::renderRainbow(unsigned long nowMs) {
+  uint8_t speed = style_.speed < 1 ? 1 : style_.speed;
+  uint8_t base = static_cast<uint8_t>((nowMs / (20 + (100 - speed))) & 0xFF);
+  for (int i = 0; i < hw::kNumLeds; i++) {
+    leds_[i] = CHSV(static_cast<uint8_t>(base + i * (256 / hw::kNumLeds)), 255, 255);
+  }
+  showLeds();
+}
+
+void LedController::renderSparkle(CRGB color, unsigned long nowMs) {
+  static unsigned long lastStep = 0;
+  fadeToBlackBy(leds_, hw::kNumLeds, 40);
+  if (nowMs - lastStep >= scaled(40)) {
+    lastStep = nowMs;
+    int sparks = 1 + (style_.speed / 40);
+    for (int s = 0; s < sparks; s++) {
+      leds_[random16(hw::kNumLeds)] = color;
+    }
+  }
+  showLeds();
+}
+
+void LedController::renderFire(unsigned long nowMs) {
+  static unsigned long lastStep = 0;
+  if (nowMs - lastStep < scaled(30)) {
+    showLeds();
+    return;
+  }
+  lastStep = nowMs;
+
+  for (int i = 0; i < hw::kNumLeds; i++) {
+    heat_[i] = qsub8(heat_[i], random8(0, 40));
+  }
+  for (int k = hw::kNumLeds - 1; k >= 2; k--) {
+    heat_[k] = (heat_[k - 1] + heat_[k - 2] + heat_[k - 2]) / 3;
+  }
+  if (random8() < 120) {
+    int y = random8(2);
+    heat_[y] = qadd8(heat_[y], random8(160, 255));
+  }
+  for (int j = 0; j < hw::kNumLeds; j++) {
+    leds_[j] = HeatColor(heat_[j]);
+  }
+  showLeds();
+}
+
+void LedController::renderEffect(LedEffect effect, CRGB color, uint8_t progressPercent, unsigned long nowMs) {
+  switch (effect) {
+    case LedEffect::Solid:
+      renderSolid(color);
+      break;
+    case LedEffect::Comet:
+      renderComet(color, nowMs, scaled(70));
+      break;
+    case LedEffect::Wave:
+      renderWaveColor(color, nowMs);
+      break;
+    case LedEffect::Strobe:
+      renderStrobe(color, nowMs, scaled(180), scaled(180));
+      break;
+    case LedEffect::Progress:
+      renderProgressBar(color, CRGB::Black, progressPercent);
+      break;
+    case LedEffect::Rainbow:
+      renderRainbow(nowMs);
+      break;
+    case LedEffect::Sparkle:
+      renderSparkle(color, nowMs);
+      break;
+    case LedEffect::Fire:
+      renderFire(nowMs);
+      break;
+    case LedEffect::Pulse:
+    default:
+      renderPulse(color, nowMs, scaled(3000));
+      break;
+  }
+}
+
+void LedController::renderSlot(const LedStyleSlot& slot, uint8_t progressPercent, unsigned long nowMs) {
+  renderEffect(slot.effect, slot.color, progressPercent, nowMs);
+}
+
+void LedController::render(SystemState state, const PrinterTelemetry& telemetry, unsigned long nowMs) {
+  FastLED.setBrightness(brightnessToPwm(style_.brightness));
+
+  if (state == SystemState::Finished && telemetry.finishedAtMs != 0 &&
+      nowMs - telemetry.finishedAtMs >= led_cfg::kFinishedSolidMs) {
+    state = SystemState::Idle;
+  }
+
+  if (asleep_ && state == SystemState::Idle) {
+    showBlack();
+    return;
+  }
+
+  switch (state) {
+    case SystemState::Provisioning:
+      renderComet(CRGB::Blue, nowMs, scaled(60));
+      break;
+    case SystemState::WifiConnecting:
+      renderWave(nowMs, 160);
+      break;
+    case SystemState::MqttConnecting:
+      renderStrobe(CRGB::Blue, nowMs, scaled(120), scaled(120));
+      break;
+    case SystemState::Idle:
+      renderSlot(style_.idle, 100, nowMs);
+      break;
+    case SystemState::Homing:
+      renderSlot(style_.homing, 100, nowMs);
+      break;
+    case SystemState::Leveling:
+      renderSlot(style_.leveling, 100, nowMs);
+      break;
+    case SystemState::Preparing:
+      renderSlot(style_.preparing, 100, nowMs);
+      break;
+    case SystemState::Downloading:
+      renderSlot(style_.downloading, telemetry.progressPercent, nowMs);
+      break;
+    case SystemState::Heating:
+      // Keep the classic heat ramp when Progress is selected; other effects use the slot color.
+      if (style_.heating.effect == LedEffect::Progress) {
+        renderHeating(telemetry.progressPercent);
+      } else {
+        renderSlot(style_.heating, telemetry.progressPercent, nowMs);
+      }
+      break;
+    case SystemState::Printing:
+      renderSlot(style_.printing, telemetry.progressPercent, nowMs);
+      break;
+    case SystemState::Paused:
+      renderSlot(style_.paused, telemetry.progressPercent, nowMs);
+      break;
+    case SystemState::Finished:
+      renderSlot(style_.finished, 100, nowMs);
+      break;
+    case SystemState::Error:
+      renderSlot(style_.error, 100, nowMs);
+      break;
+  }
+}

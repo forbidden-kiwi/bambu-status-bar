@@ -1,0 +1,8 @@
+# 4 MB flash, two OTA app slots, no filesystem.
+# Each app slot is ~1.94 MB. Offsets match the ESP32-C6 bootloader
+# (partition table at 0x8000, first app at 0x10000).
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x1F0000,
+app1,     app,  ota_1,   0x200000,0x1F0000,
