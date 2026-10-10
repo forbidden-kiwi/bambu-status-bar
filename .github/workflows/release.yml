@@ -1,0 +1,56 @@
+name: Release firmware
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build ESP32-C6 firmware
+        run: pio run -e esp32c6
+
+      - name: Resolve tag name
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare asset
+        run: |
+          cp .pio/build/esp32c6/firmware.bin firmware.bin
+          ls -la firmware.bin
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Bambu Status Bar ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: firmware.bin
+          fail_on_unmatched_files: true
