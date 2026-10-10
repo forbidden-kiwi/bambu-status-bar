@@ -38,7 +38,7 @@ Configured repo in firmware: `forbidden-kiwi/bambu-status-bar`
 ## Arduino IDE
 
 Open `arduino-ide/BambuStatusBar/BambuStatusBar.ino` (generated mirror of
-`src/`). After editing `src/`, regenerate:
+`src/`, with headers copied beside the sketch). After editing `src/`, regenerate:
 
 ```bash
 python tools/generate_arduino_sketch.py
