@@ -33,7 +33,11 @@ button.secondary{background:#203044;color:var(--text);border:1px solid #34506e}
 .hero-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .hero-brand{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .eyebrow{font-size:18px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#b9d4ef}
-.hero-version{display:inline-flex;align-items:center;justify-content:center;padding:6px 12px;border-radius:999px;border:1px solid #31557d;background:#111b29;color:#dceafa;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none}
+.hero-version-row{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hero-version,.hero-update{display:inline-flex;align-items:center;justify-content:center;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none}
+.hero-version{border:1px solid #31557d;background:#111b29;color:#dceafa}
+.hero-update{border:1px solid #8a5a1a;background:#2a1c0a;color:#ffd07a;cursor:pointer}
+.hero-update[hidden]{display:none!important}
 .title{font-size:34px;line-height:1.05}.subtitle{max-width:720px;color:var(--muted);line-height:1.55}
 .micro,.section-summary p{color:var(--muted);line-height:1.5}.micro{font-size:13px}
 .section-summary{display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:center;padding:22px;cursor:pointer;list-style:none}
@@ -85,7 +89,10 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
   <div class="hero-top">
     <div class="hero-brand">
       <div class="eyebrow">Status Bar</div>
-      <span class="hero-version" id="heroVersion">…</span>
+      <div class="hero-version-row">
+        <span class="hero-version" id="heroVersion">…</span>
+        <a class="hero-update" id="heroUpdate" href="#secOta" hidden></a>
+      </div>
     </div>
   </div>
   <h1 class="title" data-i="title">Bambu Status Bar</h1>
@@ -290,6 +297,7 @@ ota_github:"GitHub Update",ota_check:"Auf Update prüfen",ota_install:"Update in
 ota_gh_ready:"Prüft die neueste Release auf GitHub.",
 ota_up_to_date:"Du bist auf dem neuesten Stand.",ota_available:"Update verfügbar.",
 ota_checking:"Prüfe GitHub…",ota_installing:"Lade Firmware und flashe…",
+hero_update:"Update",
 err_no_wifi:"Zuerst mit Wi-Fi verbinden",err_no_release:"Kein Release gefunden",err_no_asset:"Kein firmware.bin im Release",
 err_http_begin:"Verbindung fehlgeschlagen",err_http_connect:"GitHub nicht erreichbar (TLS/DNS)",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
 err_short_write:"Download unvollständig",err_bad_version:"Versionsformat ungültig",err_bad_json:"Ungültige Antwort",
@@ -353,6 +361,7 @@ ota_github:"GitHub update",ota_check:"Check for update",ota_install:"Install upd
 ota_gh_ready:"Checks the latest release on GitHub.",
 ota_up_to_date:"You are up to date.",ota_available:"Update available.",
 ota_checking:"Checking GitHub…",ota_installing:"Downloading and flashing…",
+hero_update:"Update",
 err_no_wifi:"Connect to Wi-Fi first",err_no_release:"No release found",err_no_asset:"No firmware.bin in release",
 err_http_begin:"Connection failed",err_http_connect:"GitHub unreachable (TLS/DNS)",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
 err_short_write:"Incomplete download",err_bad_version:"Invalid version format",err_bad_json:"Invalid response",
@@ -449,6 +458,16 @@ function applyStatus(data){
   if(data.language&&data.language!==lang){lang=data.language;applyLang()}
   const wifi=data.wifi||{}, ap=data.ap||{}, printer=data.printer||{}, leds=data.leds||{};
   $("heroVersion").textContent=data.version||"";
+  const upd=data.update||{};
+  const heroUp=$("heroUpdate");
+  if(upd.available&&upd.latest){
+    heroUp.hidden=false;
+    heroUp.textContent=t("hero_update")+" "+upd.latest;
+    if(upd.url){ otaDownloadUrl=upd.url; setOtaInfo(data.version||"",upd.latest,true); }
+  }else{
+    heroUp.hidden=true;
+    heroUp.textContent="";
+  }
   const wifiOk=!!wifi.connected, mqttOk=!!printer.mqtt, printerReady=!!printer.ready;
   setBadge($("wifiBadge"), wifi.connecting?"warn":(wifiOk?"ok":(wifi.failed?"warn":"idle")));
   $("wifiBadgeVal").textContent=wifi.connecting?(t("wifi_try")+(wifi.target||"")):(wifiOk?(wifi.ssid||t("wifi_on")):t("wifi_off"));
@@ -594,6 +613,11 @@ function setOtaInfo(current,latest,available){
   $("otaInstallBtn").disabled=!available;
   setPill($("otaPill"), available?(lang==="de"?"Update":"Update"):t("pill_ota"), available?"warn":"idle");
 }
+$("heroUpdate").onclick=ev=>{
+  ev.preventDefault();
+  const sec=$("secOta");
+  if(sec){ sec.open=true; sec.scrollIntoView({behavior:"smooth",block:"start"}); }
+};
 $("otaCheckBtn").onclick=async()=>{
   $("otaCheckBtn").disabled=true;
   $("otaGhStatus").textContent=t("ota_checking");

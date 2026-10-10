@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.4";
+constexpr const char* kFirmwareVersion = "1.0.5";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
@@ -109,6 +109,11 @@ constexpr unsigned long kStandbyAfterIdleMs = 120UL * 60UL * 1000UL;
 constexpr uint8_t kDefaultBrightnessPercent = 50;
 constexpr uint8_t kDefaultSpeedPercent = 50;
 }  // namespace led_cfg
+
+namespace ota_cfg {
+// Let DHCP/DNS settle after STA connect before the boot GitHub check.
+constexpr unsigned long kBootCheckDelayMs = 8000;
+}  // namespace ota_cfg
 
 namespace mqtt_cfg {
 constexpr int kPort = 8883;

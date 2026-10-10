@@ -266,6 +266,7 @@ void WebUi::loop() {
     stopSsdp();
   }
   syncAp(staConnected_);
+  pollBootUpdateCheck();
 }
 
 void WebUi::setLive(const char* state, uint8_t progress, bool asleep, bool mqttConnected) {
@@ -400,6 +401,54 @@ void WebUi::prepareGithubHttps() {
   stopSsdp();
   if (apRunning_ && impl_) impl_->dns.stop();
   delay(300);
+}
+
+void WebUi::pollBootUpdateCheck() {
+  if (!staConnected_) {
+    staUpSinceMs_ = 0;
+    return;
+  }
+  if (staUpSinceMs_ == 0) staUpSinceMs_ = millis();
+  if (bootUpdateCheckDone_ || bootUpdateCheckRunning_ || otaBusy_) return;
+  if (millis() - staUpSinceMs_ < ota_cfg::kBootCheckDelayMs) return;
+
+  bootUpdateCheckRunning_ = true;
+  otaBusy_ = true;
+  prepareGithubHttps();
+  if (xTaskCreate(&WebUi::bootUpdateCheckTask, "bootOta", 4096, this, 1, nullptr) != pdPASS) {
+    bootUpdateCheckRunning_ = false;
+    otaBusy_ = false;
+    bootUpdateCheckDone_ = true;
+    Serial.println(F("Boot update check: task create failed"));
+  }
+}
+
+void WebUi::bootUpdateCheckTask(void* arg) {
+  auto* self = static_cast<WebUi*>(arg);
+  const GithubReleaseInfo info = GithubOta::checkLatest();
+  self->finishBootUpdateCheck(info.ok, info.ok && info.updateAvailable, info.latestVersion,
+                               info.downloadUrl);
+  vTaskDelete(nullptr);
+}
+
+void WebUi::finishBootUpdateCheck(bool ok, bool available, const String& latest, const String& url) {
+  updateAvailable_ = available;
+  latestVersion_ = latest;
+  updateUrl_ = url;
+  bootUpdateCheckDone_ = true;
+  bootUpdateCheckRunning_ = false;
+  otaBusy_ = false;
+  Serial.print(F("Boot update check "));
+  if (!ok) {
+    Serial.println(F("failed"));
+    return;
+  }
+  if (available) {
+    Serial.print(F("available -> "));
+    Serial.println(latest);
+  } else {
+    Serial.println(F("up to date"));
+  }
 }
 
 void WebUi::startMdns() {
@@ -633,6 +682,14 @@ void WebUi::handleStatus() {
   JsonDocument doc;
   doc["ok"] = true;
   doc["version"] = kFirmwareVersion;
+  {
+    JsonObject update = doc["update"].to<JsonObject>();
+    update["checked"] = bootUpdateCheckDone_;
+    update["checking"] = bootUpdateCheckRunning_;
+    update["available"] = updateAvailable_;
+    update["latest"] = latestVersion_;
+    update["url"] = updateUrl_;
+  }
   doc["language"] = cfg.language;
   doc["hostname"] = cfg.hostname;
   doc["hostname_dhcp"] = dhcpHostname();
@@ -984,6 +1041,8 @@ void WebUi::handleUpdateCheck() {
   prepareGithubHttps();
   const GithubReleaseInfo info = GithubOta::checkLatest();
   otaBusy_ = false;
+  finishBootUpdateCheck(info.ok, info.ok && info.updateAvailable, info.latestVersion,
+                         info.downloadUrl);
   JsonDocument doc;
   doc["ok"] = info.ok;
   doc["current"] = info.currentVersion;

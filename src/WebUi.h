@@ -45,6 +45,9 @@ class WebUi {
   void syncAp(bool staUp);
   void syncCaptiveDns(bool staUp);
   void prepareGithubHttps();
+  void pollBootUpdateCheck();
+  void finishBootUpdateCheck(bool ok, bool available, const String& latest, const String& url);
+  static void bootUpdateCheckTask(void* arg);
   void startMdns();
   void startSsdp();
   void stopSsdp();
@@ -105,6 +108,14 @@ class WebUi {
   bool otaBusy_ = false;
   bool otaReject_ = false;
   std::function<void()> onOtaStart_;
+
+  // One GitHub release check after STA comes up (shown in the hero next to version).
+  bool bootUpdateCheckDone_ = false;
+  bool bootUpdateCheckRunning_ = false;
+  bool updateAvailable_ = false;
+  unsigned long staUpSinceMs_ = 0;
+  String latestVersion_;
+  String updateUrl_;
 
   const char* liveState_ = "provisioning";
   uint8_t liveProgress_ = 0;
