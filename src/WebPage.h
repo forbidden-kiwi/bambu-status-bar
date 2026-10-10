@@ -619,6 +619,7 @@ $("otaInstallBtn").onclick=async()=>{
     $("otaBar").style.width="100%";
     setStatus(t("ota_ok"),""); $("otaGhStatus").textContent=t("ota_ok");
     clearInterval(pollTimer);
+    setTimeout(()=>location.reload(),4000);
   }catch(e){
     $("otaBar").style.width="0%";
     setStatus(t("ota_fail"),""); $("otaGhStatus").textContent=errText(e.message);
@@ -632,7 +633,13 @@ $("otaBtn").onclick=()=>{
   $("otaProg").style.display="block"; $("otaBar").style.width="0%"; $("otaStatus").textContent=lang==="de"?"Lade hoch…":"Uploading…";
   xhr.open("POST","/api/update");
   xhr.upload.onprogress=ev=>{if(ev.lengthComputable)$("otaBar").style.width=Math.round(ev.loaded*100/ev.total)+"%"};
-  xhr.onload=()=>{setStatus(xhr.status===200?t("ota_ok"):t("ota_fail"),"");$("otaStatus").textContent=xhr.status===200?t("ota_ok"):t("ota_fail");clearInterval(pollTimer)};
+  xhr.onload=()=>{
+    const ok=xhr.status===200;
+    setStatus(ok?t("ota_ok"):t("ota_fail"),"");
+    $("otaStatus").textContent=ok?t("ota_ok"):t("ota_fail");
+    clearInterval(pollTimer);
+    if(ok) setTimeout(()=>location.reload(),4000);
+  };
   xhr.onerror=()=>{setStatus(t("ota_fail"),"");$("otaStatus").textContent=t("ota_fail")};
   xhr.send(body);
 };

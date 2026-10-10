@@ -15,6 +15,8 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <AsyncUDP.h>
 #include <cstdio>
 #include <DNSServer.h>
@@ -28,7 +30,7 @@
 
 // ==== Config.h ====
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.3";
+constexpr const char* kFirmwareVersion = "1.0.4";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
@@ -1612,6 +1614,11 @@ class GithubOta {
 // ==== GithubOta.cpp ====
 namespace {
 constexpr const char* kUserAgent = "BambuStatusBar-OTA";
+// ESP-IDF xTaskCreate stack size is in bytes. mbedTLS needs far more than the
+// WebServer request path provides on the Arduino loop task.
+constexpr uint32_t kTlsTaskStackBytes = 24576;
+constexpr uint32_t kCheckTimeoutMs = 45000;
+constexpr uint32_t kInstallTimeoutMs = 300000;
 
 struct SemVer {
   int major = 0;
@@ -1663,23 +1670,24 @@ void setHttpError(String& errorOut, HTTPClient& http, int code) {
   Serial.print(http.errorToString(code));
   Serial.print(F(" heap="));
   Serial.println(ESP.getFreeHeap());
-  // Negative codes are transport/TLS failures; keep a stable UI key.
   errorOut = (code < 0) ? String("http-connect") : (String("http-") + code);
 }
 
-bool httpGetToString(const String& url, String& body, String& errorOut) {
-  // Same secure-client path as Bambu MQTT (WiFiClientSecure), so TLS behaves
-  // consistently on ESP32-C6 / Arduino 3.x.
-  WiFiClientSecure client;
+void prepareSecureClient(WiFiClientSecure& client, uint32_t handshakeSec, uint32_t timeoutMs) {
   client.setInsecure();
-  client.setHandshakeTimeout(15);
-  client.setTimeout(20000);
+  client.setHandshakeTimeout(handshakeSec);
+  client.setTimeout(timeoutMs);
+}
+
+bool httpGetToString(const String& url, String& body, String& errorOut) {
+  WiFiClientSecure client;
+  prepareSecureClient(client, 20, 25000);
 
   HTTPClient http;
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
-  http.setTimeout(20000);
+  http.setTimeout(25000);
   if (!http.begin(client, url)) {
     errorOut = "http-begin";
     return false;
@@ -1695,9 +1703,8 @@ bool httpGetToString(const String& url, String& body, String& errorOut) {
   http.end();
   return true;
 }
-}  // namespace
 
-GithubReleaseInfo GithubOta::checkLatest() {
+GithubReleaseInfo checkLatestImpl() {
   GithubReleaseInfo info;
   info.currentVersion = kFirmwareVersion;
 
@@ -1705,6 +1712,16 @@ GithubReleaseInfo GithubOta::checkLatest() {
     info.error = "no-wifi";
     return info;
   }
+
+  // Fail fast with a clear log if DNS is broken (captive portal / AP+STA).
+  IPAddress githubIp;
+  if (!WiFi.hostByName("api.github.com", githubIp)) {
+    Serial.println(F("OTA DNS api.github.com failed"));
+    info.error = "http-connect";
+    return info;
+  }
+  Serial.print(F("OTA DNS api.github.com -> "));
+  Serial.println(githubIp);
 
   String url = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo +
                "/releases/latest";
@@ -1754,7 +1771,7 @@ GithubReleaseInfo GithubOta::checkLatest() {
   return info;
 }
 
-bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
+bool installFromUrlImpl(const String& downloadUrl, String& errorOut) {
   if (WiFi.status() != WL_CONNECTED) {
     errorOut = "no-wifi";
     return false;
@@ -1765,9 +1782,7 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
   }
 
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(30);
-  client.setTimeout(60000);
+  prepareSecureClient(client, 30, 60000);
 
   HTTPClient http;
   http.setReuse(false);
@@ -1808,6 +1823,80 @@ bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
   }
   http.end();
   return true;
+}
+
+// Shared job state lives in BSS so a timed-out waiter cannot free stack under the task.
+GithubReleaseInfo s_checkResult;
+volatile bool s_checkDone = false;
+
+String s_installUrl;
+String s_installError;
+volatile bool s_installOk = false;
+volatile bool s_installDone = false;
+
+void checkTask(void* /*arg*/) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    s_checkResult = checkLatestImpl();
+    if (s_checkResult.ok || s_checkResult.error == "no-wifi") break;
+    Serial.print(F("OTA check retry "));
+    Serial.println(attempt + 1);
+    vTaskDelay(pdMS_TO_TICKS(500 * (attempt + 1)));
+  }
+  s_checkDone = true;
+  vTaskDelete(nullptr);
+}
+
+void installTask(void* /*arg*/) {
+  s_installOk = installFromUrlImpl(s_installUrl, s_installError);
+  s_installDone = true;
+  vTaskDelete(nullptr);
+}
+
+bool waitFlag(volatile bool& done, uint32_t timeoutMs) {
+  const uint32_t start = millis();
+  while (!done) {
+    if (millis() - start > timeoutMs) return false;
+    delay(10);
+    yield();
+  }
+  return true;
+}
+}  // namespace
+
+GithubReleaseInfo GithubOta::checkLatest() {
+  s_checkDone = false;
+  s_checkResult = GithubReleaseInfo{};
+  s_checkResult.currentVersion = kFirmwareVersion;
+
+  if (xTaskCreate(checkTask, "ghCheck", kTlsTaskStackBytes, nullptr, 1, nullptr) != pdPASS) {
+    // Fall back to the caller stack if the task cannot be created.
+    return checkLatestImpl();
+  }
+  if (!waitFlag(s_checkDone, kCheckTimeoutMs)) {
+    Serial.println(F("OTA check task timeout"));
+    s_checkResult.ok = false;
+    s_checkResult.error = "http-connect";
+    s_checkResult.currentVersion = kFirmwareVersion;
+  }
+  return s_checkResult;
+}
+
+bool GithubOta::installFromUrl(const String& downloadUrl, String& errorOut) {
+  s_installUrl = downloadUrl;
+  s_installError = "";
+  s_installOk = false;
+  s_installDone = false;
+
+  if (xTaskCreate(installTask, "ghOta", kTlsTaskStackBytes, nullptr, 1, nullptr) != pdPASS) {
+    return installFromUrlImpl(downloadUrl, errorOut);
+  }
+  if (!waitFlag(s_installDone, kInstallTimeoutMs)) {
+    Serial.println(F("OTA install task timeout"));
+    errorOut = "http-connect";
+    return false;
+  }
+  errorOut = s_installError;
+  return s_installOk;
 }
 
 // ==== SsdpAdvertiser.h ====
@@ -2647,6 +2736,7 @@ $("otaInstallBtn").onclick=async()=>{
     $("otaBar").style.width="100%";
     setStatus(t("ota_ok"),""); $("otaGhStatus").textContent=t("ota_ok");
     clearInterval(pollTimer);
+    setTimeout(()=>location.reload(),4000);
   }catch(e){
     $("otaBar").style.width="0%";
     setStatus(t("ota_fail"),""); $("otaGhStatus").textContent=errText(e.message);
@@ -2660,7 +2750,13 @@ $("otaBtn").onclick=()=>{
   $("otaProg").style.display="block"; $("otaBar").style.width="0%"; $("otaStatus").textContent=lang==="de"?"Lade hoch…":"Uploading…";
   xhr.open("POST","/api/update");
   xhr.upload.onprogress=ev=>{if(ev.lengthComputable)$("otaBar").style.width=Math.round(ev.loaded*100/ev.total)+"%"};
-  xhr.onload=()=>{setStatus(xhr.status===200?t("ota_ok"):t("ota_fail"),"");$("otaStatus").textContent=xhr.status===200?t("ota_ok"):t("ota_fail");clearInterval(pollTimer)};
+  xhr.onload=()=>{
+    const ok=xhr.status===200;
+    setStatus(ok?t("ota_ok"):t("ota_fail"),"");
+    $("otaStatus").textContent=ok?t("ota_ok"):t("ota_fail");
+    clearInterval(pollTimer);
+    if(ok) setTimeout(()=>location.reload(),4000);
+  };
   xhr.onerror=()=>{setStatus(t("ota_fail"),"");$("otaStatus").textContent=t("ota_fail")};
   xhr.send(body);
 };
@@ -2712,6 +2808,7 @@ class WebUi {
   void stopAp();
   void syncAp(bool staUp);
   void syncCaptiveDns(bool staUp);
+  void prepareGithubHttps();
   void startMdns();
   void startSsdp();
   void stopSsdp();
@@ -3156,6 +3253,15 @@ void WebUi::syncCaptiveDns(bool staUp) {
   // so api.github.com and other public hosts can resolve for OTA.
   impl_->dns.stop();
   if (!staUp) impl_->dns.start(53, "*", WiFi.softAPIP());
+}
+
+void WebUi::prepareGithubHttps() {
+  // Free the printer MQTT TLS session and anything else that fights mbedTLS /
+  // DNS before talking to api.github.com from a dedicated OTA task.
+  if (onOtaStart_) onOtaStart_();
+  stopSsdp();
+  if (apRunning_ && impl_) impl_->dns.stop();
+  delay(300);
 }
 
 void WebUi::startMdns() {
@@ -3732,10 +3838,14 @@ void WebUi::handleFactory() {
 
 void WebUi::handleUpdateCheck() {
   noteActivity();
-  // Drop printer MQTT TLS first — ESP32-C6 often cannot open a second HTTPS
-  // session (GitHub) while MQTT is still connected; that surfaced as http--1.
-  if (onOtaStart_) onOtaStart_();
+  if (otaBusy_) {
+    sendError(409, "ota-busy");
+    return;
+  }
+  otaBusy_ = true;
+  prepareGithubHttps();
   const GithubReleaseInfo info = GithubOta::checkLatest();
+  otaBusy_ = false;
   JsonDocument doc;
   doc["ok"] = info.ok;
   doc["current"] = info.currentVersion;
@@ -3769,7 +3879,7 @@ void WebUi::handleUpdateGithub() {
   }
 
   otaBusy_ = true;
-  if (onOtaStart_) onOtaStart_();
+  prepareGithubHttps();
   String error;
   const bool ok = GithubOta::installFromUrl(urlStr, error);
   if (!ok) {
@@ -3778,7 +3888,8 @@ void WebUi::handleUpdateGithub() {
     return;
   }
   sendOk(true);
-  delay(400);
+  delay(800);
+  Serial.flush();
   ESP.restart();
 }
 

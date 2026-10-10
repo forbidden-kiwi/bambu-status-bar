@@ -393,6 +393,15 @@ void WebUi::syncCaptiveDns(bool staUp) {
   if (!staUp) impl_->dns.start(53, "*", WiFi.softAPIP());
 }
 
+void WebUi::prepareGithubHttps() {
+  // Free the printer MQTT TLS session and anything else that fights mbedTLS /
+  // DNS before talking to api.github.com from a dedicated OTA task.
+  if (onOtaStart_) onOtaStart_();
+  stopSsdp();
+  if (apRunning_ && impl_) impl_->dns.stop();
+  delay(300);
+}
+
 void WebUi::startMdns() {
   // Advertise the DHCP-safe label (no underscores) as hostname and instance,
   // with _http._tcp on port 80.
@@ -967,10 +976,14 @@ void WebUi::handleFactory() {
 
 void WebUi::handleUpdateCheck() {
   noteActivity();
-  // Drop printer MQTT TLS first — ESP32-C6 often cannot open a second HTTPS
-  // session (GitHub) while MQTT is still connected; that surfaced as http--1.
-  if (onOtaStart_) onOtaStart_();
+  if (otaBusy_) {
+    sendError(409, "ota-busy");
+    return;
+  }
+  otaBusy_ = true;
+  prepareGithubHttps();
   const GithubReleaseInfo info = GithubOta::checkLatest();
+  otaBusy_ = false;
   JsonDocument doc;
   doc["ok"] = info.ok;
   doc["current"] = info.currentVersion;
@@ -1004,7 +1017,7 @@ void WebUi::handleUpdateGithub() {
   }
 
   otaBusy_ = true;
-  if (onOtaStart_) onOtaStart_();
+  prepareGithubHttps();
   String error;
   const bool ok = GithubOta::installFromUrl(urlStr, error);
   if (!ok) {
@@ -1013,7 +1026,8 @@ void WebUi::handleUpdateGithub() {
     return;
   }
   sendOk(true);
-  delay(400);
+  delay(800);
+  Serial.flush();
   ESP.restart();
 }
 

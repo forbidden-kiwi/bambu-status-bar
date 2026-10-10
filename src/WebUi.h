@@ -44,6 +44,7 @@ class WebUi {
   void stopAp();
   void syncAp(bool staUp);
   void syncCaptiveDns(bool staUp);
+  void prepareGithubHttps();
   void startMdns();
   void startSsdp();
   void stopSsdp();
