@@ -276,6 +276,10 @@ void WebUi::setLive(const char* state, uint8_t progress, bool asleep, bool mqttC
   liveMqtt_ = mqttConnected;
 }
 
+void WebUi::setChamberLight(bool known, bool on) {
+  liveChamberLight_ = known ? (on ? "on" : "off") : "unknown";
+}
+
 void WebUi::factoryReset() {
   store_.clear();
   WiFi.disconnect(true, true);
@@ -724,6 +728,7 @@ void WebUi::handleStatus() {
   printer["code"] = cfg.accessCode;
   printer["mqtt"] = liveMqtt_;
   printer["ready"] = store_.printerReady();
+  printer["chamberLight"] = liveChamberLight_;
 
   JsonObject leds = doc["leds"].to<JsonObject>();
   auto putSlot = [&](const char* colorKey, const char* fxKey, const LightSlot& slot) {
@@ -746,6 +751,7 @@ void WebUi::handleStatus() {
   putSlot("paused", "pausedEffect", cfg.paused);
   putSlot("finished", "finishedEffect", cfg.finished);
   leds["reverse"] = cfg.ledReverse;
+  leds["followChamberLight"] = cfg.followChamberLight;
 
   doc["state"] = liveState_;
   doc["progress"] = liveProgress_;
@@ -955,6 +961,9 @@ void WebUi::handleLeds() {
   cfg.paused = paused;
   cfg.finished = finished;
   cfg.ledReverse = doc["reverse"].as<bool>();
+  if (!doc["followChamberLight"].isNull()) {
+    cfg.followChamberLight = doc["followChamberLight"].as<bool>();
+  }
   const bool hwChanged =
       (hasPin && static_cast<uint8_t>(pin) != cfg.ledPin) ||
       (hasCount && static_cast<uint16_t>(count) != cfg.ledCount);

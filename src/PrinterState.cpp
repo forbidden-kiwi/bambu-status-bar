@@ -196,6 +196,8 @@ SystemState PrinterStateMachine::update(JsonVariantConst printObj, unsigned long
     if (readIntField(printObj, "print_error", code)) printErrorCode_ = code;
   }
 
+  updateChamberLight(printObj);
+
   if (!printObj["gcode_state"].isNull()) {
     const char* gs = printObj["gcode_state"] | "";
     copyGcode(gcodeState_, sizeof(gcodeState_), gs);
@@ -413,6 +415,22 @@ void PrinterStateMachine::resolveFromLatched(unsigned long nowMs) {
 
   if (state_ == SystemState::MqttConnecting) {
     state_ = SystemState::Idle;
+  }
+}
+
+void PrinterStateMachine::updateChamberLight(JsonVariantConst printObj) {
+  // Diff payloads often omit lights_report — keep the last known chamber state.
+  if (printObj["lights_report"].isNull()) return;
+  JsonArrayConst lights = printObj["lights_report"].as<JsonArrayConst>();
+  if (lights.isNull()) return;
+  for (JsonVariantConst entry : lights) {
+    const char* node = entry["node"] | "";
+    if (strcmp(node, "chamber_light") != 0) continue;
+    const char* mode = entry["mode"] | "";
+    // on and flashing both mean the printer light is active.
+    chamberLightOn_ = (strcmp(mode, "on") == 0 || strcmp(mode, "flashing") == 0);
+    haveChamberLight_ = true;
+    break;
   }
 }
 

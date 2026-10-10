@@ -174,10 +174,16 @@ void loop() {
   } else if (now - idleSinceMs >= led_cfg::kStandbyAfterIdleMs) {
     asleep = true;
   }
-  ledController.setAsleep(asleep);
+  // Optional: printer chamber_light drives the bar (one-way). Unknown = leave on.
+  bool barOff = asleep;
+  if (cfg.followChamberLight && printerState.haveChamberLight() && !printerState.chamberLightOn()) {
+    barOff = true;
+  }
+  ledController.setAsleep(barOff);
 
   const char* reported = idleVisual ? "idle" : stateKey(shown);
   web.setLive(reported, printerState.telemetry().progressPercent, asleep && idleVisual, mqttUp);
+  web.setChamberLight(printerState.haveChamberLight(), printerState.chamberLightOn());
 
   if (now - lastFrameMs >= kFrameIntervalMs) {
     lastFrameMs = now;

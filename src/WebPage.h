@@ -179,6 +179,8 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     </div>
     <p class="micro" data-i="light_hw_hint">Pin or count changes reboot the device so FastLED can re-init.</p>
     <label class="check"><input id="ledReverse" type="checkbox"> <span data-i="light_reverse">Reverse LED direction</span></label>
+    <label class="check"><input id="followChamberLight" type="checkbox"> <span data-i="light_follow_chamber">Follow printer chamber light</span></label>
+    <p class="micro" id="chamberLightHint">When enabled, the status bar turns off while the printer chamber light is off.</p>
     <div class="light-rows" id="lightStates"></div>
     <div class="actions"><button type="button" class="secondary" id="lightReset" data-i="light_reset">Reset Colors</button></div>
   </div>
@@ -219,6 +221,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     <div class="actions">
       <button type="button" class="secondary" id="otaCheckBtn" data-i="ota_check">Auf Update prüfen</button>
       <button type="button" class="primary" id="otaInstallBtn" data-i="ota_install" disabled>Update installieren</button>
+      <button type="button" class="secondary" id="otaReinstallBtn" data-i="ota_reinstall" disabled>Neuinstallation</button>
     </div>
     <div class="micro" id="otaGhStatus" data-i="ota_gh_ready">Prüft die neueste Release auf GitHub.</div>
     <hr style="border:none;border-top:1px solid #243447;margin:18px 0">
@@ -280,6 +283,9 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"LED-Richtung umkehren",
+light_follow_chamber:"Mit Drucker-Chamber-Licht synchronisieren",
+light_follow_hint:"Wenn aktiv, bleibt die Statusleiste aus, solange das Chamber-Licht am Drucker aus ist.",
+light_chamber_state:"Chamber-Licht",
 light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
 light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
 fx_pulse:"Atmen",fx_solid:"Fest",fx_comet:"Komet",fx_wave:"Welle",fx_strobe:"Blinken",fx_progress:"Fortschritt",
@@ -294,9 +300,11 @@ pill_ota:"OTA",warn:"Warnung:",ota_file:"Firmware-.bin-Datei",ota_start:"Hochlad
 ota_hint:"Das Gerät startet nach dem Flash neu. Nutze nur firmware.bin (ESP32-C6), nicht firmware.factory.bin.",
 ota_ready:"Oder lokal eine .bin für ESP32-C6 wählen.",
 ota_github:"GitHub Update",ota_check:"Auf Update prüfen",ota_install:"Update installieren",
+ota_reinstall:"Neuinstallation",
 ota_gh_ready:"Prüft die neueste Release auf GitHub.",
 ota_up_to_date:"Du bist auf dem neuesten Stand.",ota_available:"Update verfügbar.",
 ota_checking:"Prüfe GitHub…",ota_installing:"Lade Firmware und flashe…",
+ota_reinstalling:"Installiere aktuelle Release erneut…",
 hero_update:"Update",
 err_no_wifi:"Zuerst mit Wi-Fi verbinden",err_no_release:"Kein Release gefunden",err_no_asset:"Kein firmware.bin im Release",
 err_http_begin:"Verbindung fehlgeschlagen",err_http_connect:"GitHub nicht erreichbar (TLS/DNS)",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
@@ -344,6 +352,9 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"Reverse LED direction",
+light_follow_chamber:"Follow printer chamber light",
+light_follow_hint:"When enabled, the status bar turns off while the printer chamber light is off.",
+light_chamber_state:"Chamber light",
 light_pin:"LED data pin (GPIO)",light_count:"LED count",
 light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
 fx_pulse:"Pulse",fx_solid:"Solid",fx_comet:"Comet",fx_wave:"Wave",fx_strobe:"Strobe",fx_progress:"Progress",
@@ -358,9 +369,11 @@ pill_ota:"OTA",warn:"Warning:",ota_file:"Firmware .bin file",ota_start:"Upload &
 ota_hint:"The device restarts after flashing. Use firmware.bin (ESP32-C6) only — not firmware.factory.bin.",
 ota_ready:"Or pick a local .bin built for ESP32-C6.",
 ota_github:"GitHub update",ota_check:"Check for update",ota_install:"Install update",
+ota_reinstall:"Reinstall",
 ota_gh_ready:"Checks the latest release on GitHub.",
 ota_up_to_date:"You are up to date.",ota_available:"Update available.",
 ota_checking:"Checking GitHub…",ota_installing:"Downloading and flashing…",
+ota_reinstalling:"Reinstalling the latest release…",
 hero_update:"Update",
 err_no_wifi:"Connect to Wi-Fi first",err_no_release:"No release found",err_no_asset:"No firmware.bin in release",
 err_http_begin:"Connection failed",err_http_connect:"GitHub unreachable (TLS/DNS)",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
@@ -460,13 +473,16 @@ function applyStatus(data){
   $("heroVersion").textContent=data.version||"";
   const upd=data.update||{};
   const heroUp=$("heroUpdate");
+  if(upd.url) otaDownloadUrl=upd.url;
   if(upd.available&&upd.latest){
     heroUp.hidden=false;
     heroUp.textContent=t("hero_update")+" "+upd.latest;
-    if(upd.url){ otaDownloadUrl=upd.url; setOtaInfo(data.version||"",upd.latest,true); }
+    setOtaInfo(data.version||"",upd.latest,true);
   }else{
     heroUp.hidden=true;
     heroUp.textContent="";
+    if(upd.checked&&upd.latest) setOtaInfo(data.version||"",upd.latest,false);
+    else $("otaReinstallBtn").disabled=!otaDownloadUrl;
   }
   const wifiOk=!!wifi.connected, mqttOk=!!printer.mqtt, printerReady=!!printer.ready;
   setBadge($("wifiBadge"), wifi.connecting?"warn":(wifiOk?"ok":(wifi.failed?"warn":"idle")));
@@ -498,6 +514,10 @@ function applyStatus(data){
     setIdle(s.key+'Effect', leds[s.key+'Effect']||def.fx);
   });
   setIdle("ledReverse", !!leds.reverse);
+  setIdle("followChamberLight", !!leds.followChamberLight);
+  const ch=printer.chamberLight||"unknown";
+  const chLabel=ch==="on"?(lang==="de"?"an":"on"):(ch==="off"?(lang==="de"?"aus":"off"):"—");
+  $("chamberLightHint").textContent=t("light_follow_hint")+" ("+t("light_chamber_state")+": "+chLabel+")";
   if(document.activeElement!==$("ledPin")) $("ledPin").value=leds.pin??19;
   if(document.activeElement!==$("ledCount")){
     $("ledCount").max=leds.maxCount||64;
@@ -561,6 +581,7 @@ async function saveLeds(){
     brightness:Number($("brightness").value),
     speed:Number($("speed").value),
     reverse:$("ledReverse").checked,
+    followChamberLight:$("followChamberLight").checked,
     pin:Number($("ledPin").value),
     count:Number($("ledCount").value)
   };
@@ -599,6 +620,7 @@ $("bindBtn").onclick=async()=>{
 });
 ["ledPin","ledCount"].forEach(id=>$(id).addEventListener("change",scheduleLeds));
 $("ledReverse").addEventListener("change",scheduleLeds);
+$("followChamberLight").addEventListener("change",scheduleLeds);
 $("lightReset").onclick=async()=>{try{await api("/api/leds/reset",{});setStatus(t("saved"),"");refresh()}catch(e){setStatus(errText(e.message),"")}};
 buildLightRows();
 $("apBtn").onclick=async()=>{
@@ -611,7 +633,29 @@ function setOtaInfo(current,latest,available){
   const cur=current||"—", lat=latest||"—";
   $("otaVersionInfo").textContent=(lang==="de"?"Aktuell: ":"Current: ")+cur+" · "+(lang==="de"?"Neueste: ":"Latest: ")+lat;
   $("otaInstallBtn").disabled=!available;
+  $("otaReinstallBtn").disabled=!otaDownloadUrl;
   setPill($("otaPill"), available?(lang==="de"?"Update":"Update"):t("pill_ota"), available?"warn":"idle");
+}
+async function runGithubInstall(reinstall){
+  if(!otaDownloadUrl){ $("otaGhStatus").textContent=t("ota_gh_ready"); return; }
+  $("otaInstallBtn").disabled=true;
+  $("otaReinstallBtn").disabled=true;
+  $("otaCheckBtn").disabled=true;
+  $("otaGhStatus").textContent=reinstall?t("ota_reinstalling"):t("ota_installing");
+  $("otaProg").style.display="block"; $("otaBar").style.width="35%";
+  try{
+    await api("/api/update/github",{url:otaDownloadUrl});
+    $("otaBar").style.width="100%";
+    setStatus(t("ota_ok"),""); $("otaGhStatus").textContent=t("ota_ok");
+    clearInterval(pollTimer);
+    setTimeout(()=>location.reload(),4000);
+  }catch(e){
+    $("otaBar").style.width="0%";
+    setStatus(t("ota_fail"),""); $("otaGhStatus").textContent=errText(e.message);
+    $("otaInstallBtn").disabled=false;
+    $("otaReinstallBtn").disabled=!otaDownloadUrl;
+    $("otaCheckBtn").disabled=false;
+  }
 }
 $("heroUpdate").onclick=ev=>{
   ev.preventDefault();
@@ -624,8 +668,11 @@ $("otaCheckBtn").onclick=async()=>{
   try{
     const res=await fetch("/api/update/check",{cache:"no-store"});
     const data=await res.json();
-    if(!data.ok){ $("otaGhStatus").textContent=errText(data.error||"bad-json"); setOtaInfo(data.current,"",false); }
-    else{
+    if(!data.ok){
+      otaDownloadUrl="";
+      $("otaGhStatus").textContent=errText(data.error||"bad-json");
+      setOtaInfo(data.current,"",false);
+    }else{
       otaDownloadUrl=data.url||"";
       setOtaInfo(data.current,data.latest,!!data.available);
       $("otaGhStatus").textContent=data.available?t("ota_available"):t("ota_up_to_date");
@@ -633,23 +680,8 @@ $("otaCheckBtn").onclick=async()=>{
   }catch(e){ $("otaGhStatus").textContent=errText(e.message); }
   $("otaCheckBtn").disabled=false;
 };
-$("otaInstallBtn").onclick=async()=>{
-  if(!otaDownloadUrl){ $("otaGhStatus").textContent=t("ota_gh_ready"); return; }
-  $("otaInstallBtn").disabled=true; $("otaCheckBtn").disabled=true;
-  $("otaGhStatus").textContent=t("ota_installing");
-  $("otaProg").style.display="block"; $("otaBar").style.width="35%";
-  try{
-    await api("/api/update/github",{url:otaDownloadUrl});
-    $("otaBar").style.width="100%";
-    setStatus(t("ota_ok"),""); $("otaGhStatus").textContent=t("ota_ok");
-    clearInterval(pollTimer);
-    setTimeout(()=>location.reload(),4000);
-  }catch(e){
-    $("otaBar").style.width="0%";
-    setStatus(t("ota_fail"),""); $("otaGhStatus").textContent=errText(e.message);
-    $("otaInstallBtn").disabled=false; $("otaCheckBtn").disabled=false;
-  }
-};
+$("otaInstallBtn").onclick=()=>runGithubInstall(false);
+$("otaReinstallBtn").onclick=()=>runGithubInstall(true);
 $("otaBtn").onclick=()=>{
   const file=$("fw").files&&$("fw").files[0]; if(!file) return;
   const xhr=new XMLHttpRequest(), body=new FormData();

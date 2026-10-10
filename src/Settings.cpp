@@ -56,6 +56,7 @@ void SettingsStore::begin() {
   loadSlot(prefs, data_.finished, "fr", "fg", "fb", "ffx", 0, 255, 0, LedEffect::Solid);
 
   data_.ledReverse = prefs.getUChar("ledrev", 0) != 0;
+  data_.followChamberLight = prefs.getUChar("follight", 0) != 0;
   data_.language = prefs.getString("lang", "de");
   prefs.end();
   clamp();
@@ -115,6 +116,7 @@ void SettingsStore::save() {
   saveSlot(prefs, data_.paused, "ur", "ug", "ub", "ufx");
   saveSlot(prefs, data_.finished, "fr", "fg", "fb", "ffx");
   prefs.putUChar("ledrev", data_.ledReverse ? 1 : 0);
+  prefs.putUChar("follight", data_.followChamberLight ? 1 : 0);
   prefs.putString("lang", data_.language);
   prefs.end();
   revision_++;
@@ -143,6 +145,7 @@ void SettingsStore::resetLights() {
   data_.paused = LightSlot{255, 255, 255, LedEffect::Pulse};
   data_.finished = LightSlot{0, 255, 0, LedEffect::Solid};
   data_.ledReverse = false;
+  // Keep followChamberLight — it is a behaviour preference, not a color preset.
   save();
 }
 

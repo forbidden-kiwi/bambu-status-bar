@@ -49,6 +49,8 @@ struct DeviceSettings {
   LightSlot finished{0, 255, 0, LedEffect::Solid};
 
   bool ledReverse = false;
+  // When true, the status bar goes dark while the printer chamber_light is off.
+  bool followChamberLight = false;
 
   String language = "de";
 };

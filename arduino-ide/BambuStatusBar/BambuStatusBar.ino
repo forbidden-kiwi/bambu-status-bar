@@ -30,7 +30,7 @@
 
 // ==== Config.h ====
 // Product version shown in the web UI and compared against GitHub Releases.
-constexpr const char* kFirmwareVersion = "1.0.5";
+constexpr const char* kFirmwareVersion = "1.0.6";
 
 // Public GitHub repo used for over-the-air updates (no token on device).
 constexpr const char* kGithubOwner = "forbidden-kiwi";
@@ -221,9 +221,13 @@ class PrinterStateMachine {
 
   SystemState state() const { return state_; }
   const PrinterTelemetry& telemetry() const { return telemetry_; }
+  // Latched from print.lights_report; unknown until first chamber_light entry.
+  bool haveChamberLight() const { return haveChamberLight_; }
+  bool chamberLightOn() const { return chamberLightOn_; }
 
  private:
   void updateHeating(ArduinoJson::JsonVariantConst printObj);
+  void updateChamberLight(ArduinoJson::JsonVariantConst printObj);
   void resolveFromLatched(unsigned long nowMs);
 
   SystemState state_ = SystemState::MqttConnecting;
@@ -239,6 +243,8 @@ class PrinterStateMachine {
   bool amsFilamentChange_ = false;
   int printErrorCode_ = 0;
   bool hasHmsAlert_ = false;
+  bool haveChamberLight_ = false;
+  bool chamberLightOn_ = true;
 
   float lastNozzleTemp_ = 0.0f;
   bool hasNozzleBaseline_ = false;
@@ -444,6 +450,8 @@ SystemState PrinterStateMachine::update(JsonVariantConst printObj, unsigned long
     int code = 0;
     if (readIntField(printObj, "print_error", code)) printErrorCode_ = code;
   }
+
+  updateChamberLight(printObj);
 
   if (!printObj["gcode_state"].isNull()) {
     const char* gs = printObj["gcode_state"] | "";
@@ -662,6 +670,22 @@ void PrinterStateMachine::resolveFromLatched(unsigned long nowMs) {
 
   if (state_ == SystemState::MqttConnecting) {
     state_ = SystemState::Idle;
+  }
+}
+
+void PrinterStateMachine::updateChamberLight(JsonVariantConst printObj) {
+  // Diff payloads often omit lights_report — keep the last known chamber state.
+  if (printObj["lights_report"].isNull()) return;
+  JsonArrayConst lights = printObj["lights_report"].as<JsonArrayConst>();
+  if (lights.isNull()) return;
+  for (JsonVariantConst entry : lights) {
+    const char* node = entry["node"] | "";
+    if (strcmp(node, "chamber_light") != 0) continue;
+    const char* mode = entry["mode"] | "";
+    // on and flashing both mean the printer light is active.
+    chamberLightOn_ = (strcmp(mode, "on") == 0 || strcmp(mode, "flashing") == 0);
+    haveChamberLight_ = true;
+    break;
   }
 }
 
@@ -1422,6 +1446,8 @@ struct DeviceSettings {
   LightSlot finished{0, 255, 0, LedEffect::Solid};
 
   bool ledReverse = false;
+  // When true, the status bar goes dark while the printer chamber_light is off.
+  bool followChamberLight = false;
 
   String language = "de";
 };
@@ -1501,6 +1527,7 @@ void SettingsStore::begin() {
   loadSlot(prefs, data_.finished, "fr", "fg", "fb", "ffx", 0, 255, 0, LedEffect::Solid);
 
   data_.ledReverse = prefs.getUChar("ledrev", 0) != 0;
+  data_.followChamberLight = prefs.getUChar("follight", 0) != 0;
   data_.language = prefs.getString("lang", "de");
   prefs.end();
   clamp();
@@ -1560,6 +1587,7 @@ void SettingsStore::save() {
   saveSlot(prefs, data_.paused, "ur", "ug", "ub", "ufx");
   saveSlot(prefs, data_.finished, "fr", "fg", "fb", "ffx");
   prefs.putUChar("ledrev", data_.ledReverse ? 1 : 0);
+  prefs.putUChar("follight", data_.followChamberLight ? 1 : 0);
   prefs.putString("lang", data_.language);
   prefs.end();
   revision_++;
@@ -1588,6 +1616,7 @@ void SettingsStore::resetLights() {
   data_.paused = LightSlot{255, 255, 255, LedEffect::Pulse};
   data_.finished = LightSlot{0, 255, 0, LedEffect::Solid};
   data_.ledReverse = false;
+  // Keep followChamberLight — it is a behaviour preference, not a color preset.
   save();
 }
 
@@ -2301,6 +2330,8 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     </div>
     <p class="micro" data-i="light_hw_hint">Pin or count changes reboot the device so FastLED can re-init.</p>
     <label class="check"><input id="ledReverse" type="checkbox"> <span data-i="light_reverse">Reverse LED direction</span></label>
+    <label class="check"><input id="followChamberLight" type="checkbox"> <span data-i="light_follow_chamber">Follow printer chamber light</span></label>
+    <p class="micro" id="chamberLightHint">When enabled, the status bar turns off while the printer chamber light is off.</p>
     <div class="light-rows" id="lightStates"></div>
     <div class="actions"><button type="button" class="secondary" id="lightReset" data-i="light_reset">Reset Colors</button></div>
   </div>
@@ -2341,6 +2372,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     <div class="actions">
       <button type="button" class="secondary" id="otaCheckBtn" data-i="ota_check">Auf Update prüfen</button>
       <button type="button" class="primary" id="otaInstallBtn" data-i="ota_install" disabled>Update installieren</button>
+      <button type="button" class="secondary" id="otaReinstallBtn" data-i="ota_reinstall" disabled>Neuinstallation</button>
     </div>
     <div class="micro" id="otaGhStatus" data-i="ota_gh_ready">Prüft die neueste Release auf GitHub.</div>
     <hr style="border:none;border-top:1px solid #243447;margin:18px 0">
@@ -2402,6 +2434,9 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"LED-Richtung umkehren",
+light_follow_chamber:"Mit Drucker-Chamber-Licht synchronisieren",
+light_follow_hint:"Wenn aktiv, bleibt die Statusleiste aus, solange das Chamber-Licht am Drucker aus ist.",
+light_chamber_state:"Chamber-Licht",
 light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
 light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
 fx_pulse:"Atmen",fx_solid:"Fest",fx_comet:"Komet",fx_wave:"Welle",fx_strobe:"Blinken",fx_progress:"Fortschritt",
@@ -2416,9 +2451,11 @@ pill_ota:"OTA",warn:"Warnung:",ota_file:"Firmware-.bin-Datei",ota_start:"Hochlad
 ota_hint:"Das Gerät startet nach dem Flash neu. Nutze nur firmware.bin (ESP32-C6), nicht firmware.factory.bin.",
 ota_ready:"Oder lokal eine .bin für ESP32-C6 wählen.",
 ota_github:"GitHub Update",ota_check:"Auf Update prüfen",ota_install:"Update installieren",
+ota_reinstall:"Neuinstallation",
 ota_gh_ready:"Prüft die neueste Release auf GitHub.",
 ota_up_to_date:"Du bist auf dem neuesten Stand.",ota_available:"Update verfügbar.",
 ota_checking:"Prüfe GitHub…",ota_installing:"Lade Firmware und flashe…",
+ota_reinstalling:"Installiere aktuelle Release erneut…",
 hero_update:"Update",
 err_no_wifi:"Zuerst mit Wi-Fi verbinden",err_no_release:"Kein Release gefunden",err_no_asset:"Kein firmware.bin im Release",
 err_http_begin:"Verbindung fehlgeschlagen",err_http_connect:"GitHub nicht erreichbar (TLS/DNS)",err_update_begin:"OTA konnte nicht starten",err_update_end:"OTA fehlgeschlagen",
@@ -2466,6 +2503,9 @@ light_idle_fx:"Animation",light_print_fx:"Animation",light_error_fx:"Animation",
 light_homing_fx:"Animation",light_leveling_fx:"Animation",light_preparing_fx:"Animation",
 light_heating_fx:"Animation",light_downloading_fx:"Animation",light_paused_fx:"Animation",light_finished_fx:"Animation",
 light_reverse:"Reverse LED direction",
+light_follow_chamber:"Follow printer chamber light",
+light_follow_hint:"When enabled, the status bar turns off while the printer chamber light is off.",
+light_chamber_state:"Chamber light",
 light_pin:"LED data pin (GPIO)",light_count:"LED count",
 light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
 fx_pulse:"Pulse",fx_solid:"Solid",fx_comet:"Comet",fx_wave:"Wave",fx_strobe:"Strobe",fx_progress:"Progress",
@@ -2480,9 +2520,11 @@ pill_ota:"OTA",warn:"Warning:",ota_file:"Firmware .bin file",ota_start:"Upload &
 ota_hint:"The device restarts after flashing. Use firmware.bin (ESP32-C6) only — not firmware.factory.bin.",
 ota_ready:"Or pick a local .bin built for ESP32-C6.",
 ota_github:"GitHub update",ota_check:"Check for update",ota_install:"Install update",
+ota_reinstall:"Reinstall",
 ota_gh_ready:"Checks the latest release on GitHub.",
 ota_up_to_date:"You are up to date.",ota_available:"Update available.",
 ota_checking:"Checking GitHub…",ota_installing:"Downloading and flashing…",
+ota_reinstalling:"Reinstalling the latest release…",
 hero_update:"Update",
 err_no_wifi:"Connect to Wi-Fi first",err_no_release:"No release found",err_no_asset:"No firmware.bin in release",
 err_http_begin:"Connection failed",err_http_connect:"GitHub unreachable (TLS/DNS)",err_update_begin:"OTA could not start",err_update_end:"OTA failed",
@@ -2582,13 +2624,16 @@ function applyStatus(data){
   $("heroVersion").textContent=data.version||"";
   const upd=data.update||{};
   const heroUp=$("heroUpdate");
+  if(upd.url) otaDownloadUrl=upd.url;
   if(upd.available&&upd.latest){
     heroUp.hidden=false;
     heroUp.textContent=t("hero_update")+" "+upd.latest;
-    if(upd.url){ otaDownloadUrl=upd.url; setOtaInfo(data.version||"",upd.latest,true); }
+    setOtaInfo(data.version||"",upd.latest,true);
   }else{
     heroUp.hidden=true;
     heroUp.textContent="";
+    if(upd.checked&&upd.latest) setOtaInfo(data.version||"",upd.latest,false);
+    else $("otaReinstallBtn").disabled=!otaDownloadUrl;
   }
   const wifiOk=!!wifi.connected, mqttOk=!!printer.mqtt, printerReady=!!printer.ready;
   setBadge($("wifiBadge"), wifi.connecting?"warn":(wifiOk?"ok":(wifi.failed?"warn":"idle")));
@@ -2620,6 +2665,10 @@ function applyStatus(data){
     setIdle(s.key+'Effect', leds[s.key+'Effect']||def.fx);
   });
   setIdle("ledReverse", !!leds.reverse);
+  setIdle("followChamberLight", !!leds.followChamberLight);
+  const ch=printer.chamberLight||"unknown";
+  const chLabel=ch==="on"?(lang==="de"?"an":"on"):(ch==="off"?(lang==="de"?"aus":"off"):"—");
+  $("chamberLightHint").textContent=t("light_follow_hint")+" ("+t("light_chamber_state")+": "+chLabel+")";
   if(document.activeElement!==$("ledPin")) $("ledPin").value=leds.pin??19;
   if(document.activeElement!==$("ledCount")){
     $("ledCount").max=leds.maxCount||64;
@@ -2683,6 +2732,7 @@ async function saveLeds(){
     brightness:Number($("brightness").value),
     speed:Number($("speed").value),
     reverse:$("ledReverse").checked,
+    followChamberLight:$("followChamberLight").checked,
     pin:Number($("ledPin").value),
     count:Number($("ledCount").value)
   };
@@ -2721,6 +2771,7 @@ $("bindBtn").onclick=async()=>{
 });
 ["ledPin","ledCount"].forEach(id=>$(id).addEventListener("change",scheduleLeds));
 $("ledReverse").addEventListener("change",scheduleLeds);
+$("followChamberLight").addEventListener("change",scheduleLeds);
 $("lightReset").onclick=async()=>{try{await api("/api/leds/reset",{});setStatus(t("saved"),"");refresh()}catch(e){setStatus(errText(e.message),"")}};
 buildLightRows();
 $("apBtn").onclick=async()=>{
@@ -2733,7 +2784,29 @@ function setOtaInfo(current,latest,available){
   const cur=current||"—", lat=latest||"—";
   $("otaVersionInfo").textContent=(lang==="de"?"Aktuell: ":"Current: ")+cur+" · "+(lang==="de"?"Neueste: ":"Latest: ")+lat;
   $("otaInstallBtn").disabled=!available;
+  $("otaReinstallBtn").disabled=!otaDownloadUrl;
   setPill($("otaPill"), available?(lang==="de"?"Update":"Update"):t("pill_ota"), available?"warn":"idle");
+}
+async function runGithubInstall(reinstall){
+  if(!otaDownloadUrl){ $("otaGhStatus").textContent=t("ota_gh_ready"); return; }
+  $("otaInstallBtn").disabled=true;
+  $("otaReinstallBtn").disabled=true;
+  $("otaCheckBtn").disabled=true;
+  $("otaGhStatus").textContent=reinstall?t("ota_reinstalling"):t("ota_installing");
+  $("otaProg").style.display="block"; $("otaBar").style.width="35%";
+  try{
+    await api("/api/update/github",{url:otaDownloadUrl});
+    $("otaBar").style.width="100%";
+    setStatus(t("ota_ok"),""); $("otaGhStatus").textContent=t("ota_ok");
+    clearInterval(pollTimer);
+    setTimeout(()=>location.reload(),4000);
+  }catch(e){
+    $("otaBar").style.width="0%";
+    setStatus(t("ota_fail"),""); $("otaGhStatus").textContent=errText(e.message);
+    $("otaInstallBtn").disabled=false;
+    $("otaReinstallBtn").disabled=!otaDownloadUrl;
+    $("otaCheckBtn").disabled=false;
+  }
 }
 $("heroUpdate").onclick=ev=>{
   ev.preventDefault();
@@ -2746,8 +2819,11 @@ $("otaCheckBtn").onclick=async()=>{
   try{
     const res=await fetch("/api/update/check",{cache:"no-store"});
     const data=await res.json();
-    if(!data.ok){ $("otaGhStatus").textContent=errText(data.error||"bad-json"); setOtaInfo(data.current,"",false); }
-    else{
+    if(!data.ok){
+      otaDownloadUrl="";
+      $("otaGhStatus").textContent=errText(data.error||"bad-json");
+      setOtaInfo(data.current,"",false);
+    }else{
       otaDownloadUrl=data.url||"";
       setOtaInfo(data.current,data.latest,!!data.available);
       $("otaGhStatus").textContent=data.available?t("ota_available"):t("ota_up_to_date");
@@ -2755,23 +2831,8 @@ $("otaCheckBtn").onclick=async()=>{
   }catch(e){ $("otaGhStatus").textContent=errText(e.message); }
   $("otaCheckBtn").disabled=false;
 };
-$("otaInstallBtn").onclick=async()=>{
-  if(!otaDownloadUrl){ $("otaGhStatus").textContent=t("ota_gh_ready"); return; }
-  $("otaInstallBtn").disabled=true; $("otaCheckBtn").disabled=true;
-  $("otaGhStatus").textContent=t("ota_installing");
-  $("otaProg").style.display="block"; $("otaBar").style.width="35%";
-  try{
-    await api("/api/update/github",{url:otaDownloadUrl});
-    $("otaBar").style.width="100%";
-    setStatus(t("ota_ok"),""); $("otaGhStatus").textContent=t("ota_ok");
-    clearInterval(pollTimer);
-    setTimeout(()=>location.reload(),4000);
-  }catch(e){
-    $("otaBar").style.width="0%";
-    setStatus(t("ota_fail"),""); $("otaGhStatus").textContent=errText(e.message);
-    $("otaInstallBtn").disabled=false; $("otaCheckBtn").disabled=false;
-  }
-};
+$("otaInstallBtn").onclick=()=>runGithubInstall(false);
+$("otaReinstallBtn").onclick=()=>runGithubInstall(true);
 $("otaBtn").onclick=()=>{
   const file=$("fw").files&&$("fw").files[0]; if(!file) return;
   const xhr=new XMLHttpRequest(), body=new FormData();
@@ -2808,6 +2869,7 @@ class WebUi {
   void loop();
 
   void setLive(const char* state, uint8_t progress, bool asleep, bool mqttConnected);
+  void setChamberLight(bool known, bool on);
   void onOtaStart(std::function<void()> cb) { onOtaStart_ = std::move(cb); }
 
   void factoryReset();
@@ -2914,6 +2976,7 @@ class WebUi {
   uint8_t liveProgress_ = 0;
   bool liveAsleep_ = false;
   bool liveMqtt_ = false;
+  const char* liveChamberLight_ = "unknown";  // on | off | unknown
 
   // Containers live in the .cpp so this header stays free of WebServer/UDP includes.
   struct Impl;
@@ -3176,6 +3239,10 @@ void WebUi::setLive(const char* state, uint8_t progress, bool asleep, bool mqttC
   liveProgress_ = progress;
   liveAsleep_ = asleep;
   liveMqtt_ = mqttConnected;
+}
+
+void WebUi::setChamberLight(bool known, bool on) {
+  liveChamberLight_ = known ? (on ? "on" : "off") : "unknown";
 }
 
 void WebUi::factoryReset() {
@@ -3626,6 +3693,7 @@ void WebUi::handleStatus() {
   printer["code"] = cfg.accessCode;
   printer["mqtt"] = liveMqtt_;
   printer["ready"] = store_.printerReady();
+  printer["chamberLight"] = liveChamberLight_;
 
   JsonObject leds = doc["leds"].to<JsonObject>();
   auto putSlot = [&](const char* colorKey, const char* fxKey, const LightSlot& slot) {
@@ -3648,6 +3716,7 @@ void WebUi::handleStatus() {
   putSlot("paused", "pausedEffect", cfg.paused);
   putSlot("finished", "finishedEffect", cfg.finished);
   leds["reverse"] = cfg.ledReverse;
+  leds["followChamberLight"] = cfg.followChamberLight;
 
   doc["state"] = liveState_;
   doc["progress"] = liveProgress_;
@@ -3857,6 +3926,9 @@ void WebUi::handleLeds() {
   cfg.paused = paused;
   cfg.finished = finished;
   cfg.ledReverse = doc["reverse"].as<bool>();
+  if (!doc["followChamberLight"].isNull()) {
+    cfg.followChamberLight = doc["followChamberLight"].as<bool>();
+  }
   const bool hwChanged =
       (hasPin && static_cast<uint8_t>(pin) != cfg.ledPin) ||
       (hasCount && static_cast<uint16_t>(count) != cfg.ledCount);
@@ -4185,10 +4257,16 @@ void loop() {
   } else if (now - idleSinceMs >= led_cfg::kStandbyAfterIdleMs) {
     asleep = true;
   }
-  ledController.setAsleep(asleep);
+  // Optional: printer chamber_light drives the bar (one-way). Unknown = leave on.
+  bool barOff = asleep;
+  if (cfg.followChamberLight && printerState.haveChamberLight() && !printerState.chamberLightOn()) {
+    barOff = true;
+  }
+  ledController.setAsleep(barOff);
 
   const char* reported = idleVisual ? "idle" : stateKey(shown);
   web.setLive(reported, printerState.telemetry().progressPercent, asleep && idleVisual, mqttUp);
+  web.setChamberLight(printerState.haveChamberLight(), printerState.chamberLightOn());
 
   if (now - lastFrameMs >= kFrameIntervalMs) {
     lastFrameMs = now;

@@ -15,6 +15,7 @@ class WebUi {
   void loop();
 
   void setLive(const char* state, uint8_t progress, bool asleep, bool mqttConnected);
+  void setChamberLight(bool known, bool on);
   void onOtaStart(std::function<void()> cb) { onOtaStart_ = std::move(cb); }
 
   void factoryReset();
@@ -121,6 +122,7 @@ class WebUi {
   uint8_t liveProgress_ = 0;
   bool liveAsleep_ = false;
   bool liveMqtt_ = false;
+  const char* liveChamberLight_ = "unknown";  // on | off | unknown
 
   // Containers live in the .cpp so this header stays free of WebServer/UDP includes.
   struct Impl;

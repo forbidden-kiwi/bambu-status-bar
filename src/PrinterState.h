@@ -42,9 +42,13 @@ class PrinterStateMachine {
 
   SystemState state() const { return state_; }
   const PrinterTelemetry& telemetry() const { return telemetry_; }
+  // Latched from print.lights_report; unknown until first chamber_light entry.
+  bool haveChamberLight() const { return haveChamberLight_; }
+  bool chamberLightOn() const { return chamberLightOn_; }
 
  private:
   void updateHeating(ArduinoJson::JsonVariantConst printObj);
+  void updateChamberLight(ArduinoJson::JsonVariantConst printObj);
   void resolveFromLatched(unsigned long nowMs);
 
   SystemState state_ = SystemState::MqttConnecting;
@@ -60,6 +64,8 @@ class PrinterStateMachine {
   bool amsFilamentChange_ = false;
   int printErrorCode_ = 0;
   bool hasHmsAlert_ = false;
+  bool haveChamberLight_ = false;
+  bool chamberLightOn_ = true;
 
   float lastNozzleTemp_ = 0.0f;
   bool hasNozzleBaseline_ = false;
