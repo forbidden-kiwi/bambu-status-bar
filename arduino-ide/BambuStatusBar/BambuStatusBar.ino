@@ -2306,7 +2306,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
 <section class="hero">
   <div class="hero-top">
     <div class="hero-brand">
-      <div class="eyebrow">Status Bar</div>
+      <div class="eyebrow" data-i="hero_eyebrow">Web config</div>
       <div class="hero-version-row">
         <span class="hero-version" id="heroVersion">…</span>
         <a class="hero-update" id="heroUpdate" href="#secOta" hidden></a>
@@ -2478,7 +2478,7 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
 <script>
 const I18N={
 de:{
-title:"Bambu Status Bar",subtitle:"WLAN, lokaler Drucker und LED-Leiste für deinen Bambu Lab Drucker.",
+title:"Bambu Status Bar",hero_eyebrow:"Web config",subtitle:"WLAN, lokaler Drucker und LED-Leiste für deinen Bambu Lab Drucker.",
 note:"Hinweis:",hint_ap:"Im Setup-Hotspot reicht zuerst Wi-Fi. Danach öffnest du diese Seite im Heimnetz.",
 hint_ok:"Wi-Fi ist online. Druckerbindung, Licht und OTA kannst du unten einstellen.",
 badge_wifi:"Wi-Fi",badge_local:"Local Path",badge_state:"Status",badge_ap:"Hotspot",
@@ -2547,7 +2547,7 @@ err_bad_host:"Hostname: Buchstaben, Zahlen, Bindestrich oder Unterstrich",err_ba
 err_bad_leds:"Lichtwerte ungültig"
 },
 en:{
-title:"Bambu Status Bar",subtitle:"Wi-Fi, local printer path and LED bar for your Bambu Lab printer.",
+title:"Bambu Status Bar",hero_eyebrow:"Web config",subtitle:"Wi-Fi, local printer path and LED bar for your Bambu Lab printer.",
 note:"Note:",hint_ap:"While the setup hotspot is up, start with Wi-Fi. Then reopen this page on the home-network IP.",
 hint_ok:"Wi-Fi is up. Review printer binding, light colors and OTA below.",
 badge_wifi:"Wi-Fi",badge_local:"Local Path",badge_state:"Status",badge_ap:"Hotspot",
