@@ -14,7 +14,7 @@ enum class LedEffect : uint8_t {
   Progress = 5,
   Rainbow = 6,
   Sparkle = 7,
-  Fire = 8,
+  Ember = 8,  // was Fire; value kept for NVS compatibility
 };
 
 inline constexpr uint8_t kLedEffectCount = 9;
@@ -37,8 +37,8 @@ inline const char* ledEffectName(LedEffect effect) {
       return "rainbow";
     case LedEffect::Sparkle:
       return "sparkle";
-    case LedEffect::Fire:
-      return "fire";
+    case LedEffect::Ember:
+      return "ember";
   }
   return "pulse";
 }
@@ -77,8 +77,8 @@ inline bool parseLedEffect(const char* text, LedEffect& out) {
     out = LedEffect::Sparkle;
     return true;
   }
-  if (!strcmp(text, "fire")) {
-    out = LedEffect::Fire;
+  if (!strcmp(text, "ember") || !strcmp(text, "fire")) {
+    out = LedEffect::Ember;
     return true;
   }
   return false;

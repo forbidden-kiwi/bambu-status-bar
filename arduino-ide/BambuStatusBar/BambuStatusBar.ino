@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>
 #include <cstring>
 #include <FastLED.h>
+#include <math.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <functional>
@@ -645,7 +646,7 @@ void LedController::showLeds() {
     }
   }
   FastLED.show();
-  // Restore logical order so stateful effects (sparkle/fire) keep working.
+  // Restore logical order so stateful effects (sparkle/ember) keep working.
   if (style_.reverse) {
     for (int i = 0, j = static_cast<int>(count_) - 1; i < j; ++i, --j) {
       CRGB tmp = leds_[i];
@@ -683,19 +684,49 @@ void LedController::renderHeating(uint8_t percent) {
 }
 
 void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs) {
-  static int pos = 0;
-  static int dir = 1;
-  static unsigned long lastStep = 0;
-  if (nowMs - lastStep > stepMs) {
-    lastStep = nowMs;
-    pos += dir;
-    if (pos >= static_cast<int>(count_) - 1) dir = -1;
-    if (pos <= 0) dir = 1;
-  }
+  // Continuous sub-pixel position (ms per LED); soft anti-aliased head + trail.
   fill_solid(leds_, count_, CRGB::Black);
-  for (int tail = 0; tail < 4; tail++) {
-    int idx = pos - tail * dir;
-    if (idx >= 0 && idx < static_cast<int>(count_)) leds_[idx] = color / (1 << tail);
+  if (count_ == 0) {
+    showLeds();
+    return;
+  }
+  if (stepMs < 8) stepMs = 8;
+  if (count_ == 1) {
+    leds_[0] = color;
+    showLeds();
+    return;
+  }
+
+  const uint16_t span = count_ - 1;
+  const uint32_t halfTrip = static_cast<uint32_t>(span) * stepMs;
+  const uint32_t roundTrip = halfTrip * 2;
+  const uint32_t t = nowMs % roundTrip;
+  float pos;
+  float dir;
+  if (t <= halfTrip) {
+    pos = static_cast<float>(t) / static_cast<float>(stepMs);
+    dir = 1.0f;
+  } else {
+    pos = static_cast<float>(span) - static_cast<float>(t - halfTrip) / static_cast<float>(stepMs);
+    dir = -1.0f;
+  }
+
+  constexpr float kTail = 5.5f;
+  for (int i = 0; i < static_cast<int>(count_); i++) {
+    const float behind = -dir * (static_cast<float>(i) - pos);
+    float bri = 0.0f;
+    if (behind >= -1.0f && behind <= kTail) {
+      if (behind <= 0.0f) {
+        bri = 1.0f + behind;  // fractional head across neighboring LEDs
+      } else {
+        bri = 1.0f / (1.0f + behind * behind * 0.4f);
+      }
+    }
+    if (bri <= 0.02f) continue;
+    if (bri > 1.0f) bri = 1.0f;
+    CRGB c = color;
+    c.nscale8(static_cast<uint8_t>(bri * 255.0f));
+    leds_[i] = c;
   }
   showLeds();
 }
@@ -726,11 +757,22 @@ void LedController::renderWaveColor(CRGB color, unsigned long nowMs) {
 }
 
 void LedController::renderPulse(CRGB color, unsigned long nowMs, uint16_t periodMs) {
-  uint16_t t = nowMs % periodMs;
-  float phase = (t < periodMs / 2) ? (t / static_cast<float>(periodMs / 2))
-                                    : (1.0f - (t - periodMs / 2) / static_cast<float>(periodMs / 2));
+  // Smooth sine breathe with a fixed dark hold at the bottom of each cycle.
+  if (periodMs < 100) periodMs = 100;
+  uint16_t darkHold = 250;
+  if (darkHold > (periodMs * 3) / 10) darkHold = (periodMs * 3) / 10;
+  const uint16_t breathMs = periodMs - darkHold;
+  const uint16_t t = nowMs % periodMs;
+
+  uint8_t scale = 0;
+  if (t >= darkHold && breathMs > 0) {
+    const float u = static_cast<float>(t - darkHold) / static_cast<float>(breathMs);
+    // sin(pi*u): 0 → 1 → 0 with soft peak, no linear kink
+    const float env = sinf(u * 3.14159265f);
+    scale = static_cast<uint8_t>(env * 255.0f);
+  }
   CRGB col = color;
-  col.nscale8(static_cast<uint8_t>(32 + phase * 223));
+  col.nscale8(scale);
   fill_solid(leds_, count_, col);
   showLeds();
 }
@@ -764,24 +806,32 @@ void LedController::renderSparkle(CRGB color, unsigned long nowMs) {
   showLeds();
 }
 
-void LedController::renderFire(unsigned long nowMs) {
-  static unsigned long lastStep = 0;
-  if (nowMs - lastStep < scaled(30)) {
-    showLeds();
-    return;
-  }
-  lastStep = nowMs;
-
+void LedController::renderEmber(unsigned long nowMs) {
+  (void)nowMs;
+  // Horizontal glow: cool, blur left/right, spark along the strip (not "up").
   for (int i = 0; i < static_cast<int>(count_); i++) {
-    heat_[i] = qsub8(heat_[i], random8(0, 40));
+    heat_[i] = qsub8(heat_[i], random8(1, 10));
   }
-  for (int k = static_cast<int>(count_) - 1; k >= 2; k--) {
-    heat_[k] = (heat_[k - 1] + heat_[k - 2] + heat_[k - 2]) / 3;
+
+  uint8_t next[hw::kMaxNumLeds];
+  for (int i = 0; i < static_cast<int>(count_); i++) {
+    uint16_t sum = static_cast<uint16_t>(heat_[i]) * 2;
+    sum += (i > 0) ? heat_[i - 1] : heat_[i];
+    sum += (i + 1 < static_cast<int>(count_)) ? heat_[i + 1] : heat_[i];
+    next[i] = static_cast<uint8_t>(sum / 4);
   }
-  if (random8() < 120) {
-    int y = random8(2);
-    heat_[y] = qadd8(heat_[y], random8(160, 255));
+  for (int i = 0; i < static_cast<int>(count_); i++) {
+    heat_[i] = next[i];
   }
+
+  const uint8_t sparkChance = static_cast<uint8_t>(28 + style_.speed / 2);
+  if (count_ > 0 && random8() < sparkChance) {
+    const int x = random16(count_);
+    heat_[x] = qadd8(heat_[x], random8(140, 255));
+    if (x > 0) heat_[x - 1] = qadd8(heat_[x - 1], random8(30, 90));
+    if (x + 1 < static_cast<int>(count_)) heat_[x + 1] = qadd8(heat_[x + 1], random8(30, 90));
+  }
+
   for (int j = 0; j < static_cast<int>(count_); j++) {
     leds_[j] = HeatColor(heat_[j]);
   }
@@ -811,8 +861,8 @@ void LedController::renderEffect(LedEffect effect, CRGB color, uint8_t progressP
     case LedEffect::Sparkle:
       renderSparkle(color, nowMs);
       break;
-    case LedEffect::Fire:
-      renderFire(nowMs);
+    case LedEffect::Ember:
+      renderEmber(nowMs);
       break;
     case LedEffect::Pulse:
     default:
@@ -2827,7 +2877,7 @@ BambuMqttClient mqttClient;
 PrinterStateMachine printerState;
 
 namespace {
-constexpr unsigned long kFrameIntervalMs = 33;  // ~30fps animation refresh
+constexpr unsigned long kFrameIntervalMs = 20;  // ~50fps animation refresh
 unsigned long lastFrameMs = 0;
 bool bootHeld = false;
 unsigned long bootHoldStart = 0;

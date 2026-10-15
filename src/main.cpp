@@ -13,7 +13,7 @@ BambuMqttClient mqttClient;
 PrinterStateMachine printerState;
 
 namespace {
-constexpr unsigned long kFrameIntervalMs = 33;  // ~30fps animation refresh
+constexpr unsigned long kFrameIntervalMs = 20;  // ~50fps animation refresh
 unsigned long lastFrameMs = 0;
 bool bootHeld = false;
 unsigned long bootHoldStart = 0;

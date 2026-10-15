@@ -46,7 +46,7 @@ class LedController {
   void renderSolid(CRGB color);
   void renderRainbow(unsigned long nowMs);
   void renderSparkle(CRGB color, unsigned long nowMs);
-  void renderFire(unsigned long nowMs);
+  void renderEmber(unsigned long nowMs);
   void renderHeating(uint8_t percent);
   void renderEffect(LedEffect effect, CRGB color, uint8_t progressPercent, unsigned long nowMs);
   void renderSlot(const LedStyleSlot& slot, uint8_t progressPercent, unsigned long nowMs);

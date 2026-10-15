@@ -294,7 +294,7 @@ light_chamber_state:"Chamber-Licht",
 light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
 light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
 fx_pulse:"Atmen",fx_solid:"Fest",fx_comet:"Komet",fx_wave:"Welle",fx_strobe:"Blinken",fx_progress:"Fortschritt",
-fx_rainbow:"Regenbogen",fx_sparkle:"Funkeln",fx_fire:"Feuer",
+fx_rainbow:"Regenbogen",fx_sparkle:"Funkeln",fx_ember:"Glut",
 light_reset:"Farben & Animationen zurücksetzen",light_hint:"Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig bleibt 15 Minuten, danach Leerlauf.",
 sec_ap:"Setup Hotspot",sec_ap_desc:"Fallback-Access-Point, falls kein WLAN erreichbar ist.",
 ap_enable:"Hotspot auch bei verbundenem Wi-Fi anlassen",ap_ssid:"Hotspot-Name",ap_pass:"Hotspot-Passwort",ap_ip:"Hotspot-IP",
@@ -363,7 +363,7 @@ light_chamber_state:"Chamber light",
 light_pin:"LED data pin (GPIO)",light_count:"LED count",
 light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
 fx_pulse:"Pulse",fx_solid:"Solid",fx_comet:"Comet",fx_wave:"Wave",fx_strobe:"Strobe",fx_progress:"Progress",
-fx_rainbow:"Rainbow",fx_sparkle:"Sparkle",fx_fire:"Fire",
+fx_rainbow:"Rainbow",fx_sparkle:"Sparkle",fx_ember:"Ember",
 light_reset:"Reset colors & animations",light_hint:"Color and animation per status. Brightness and speed apply to all. Finished stays for 15 minutes, then idle.",
 sec_ap:"Setup Hotspot",sec_ap_desc:"Fallback access point when home Wi-Fi is unavailable.",
 ap_enable:"Keep hotspot enabled when Wi-Fi is up",ap_ssid:"Hotspot Name",ap_pass:"Hotspot Password",ap_ip:"Hotspot IP",
@@ -416,7 +416,7 @@ const LIGHT_SLOTS=[
   {key:"finished",color:"#00ff00",fx:"solid"},
   {key:"error",color:"#ff0000",fx:"strobe"}
 ];
-const FX_LIST=["pulse","solid","comet","wave","strobe","progress","rainbow","sparkle","fire"];
+const FX_LIST=["pulse","solid","comet","wave","strobe","progress","rainbow","sparkle","ember"];
 function t(k){return (I18N[lang]&&I18N[lang][k])||I18N.de[k]||k}
 function fxOptionsHtml(selected){
   return FX_LIST.map(v=>'<option value="'+v+'" data-i="fx_'+v+'"'+(v===selected?' selected':'')+'>'+t('fx_'+v)+'</option>').join('');
