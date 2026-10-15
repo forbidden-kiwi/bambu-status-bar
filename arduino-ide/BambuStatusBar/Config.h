@@ -102,12 +102,18 @@ inline bool isSupportedLedDataPin(uint8_t pin) {
 }  // namespace hw
 
 namespace led_cfg {
-// Solid finished colour for this long, then fall back to the idle effect.
-constexpr unsigned long kFinishedSolidMs = 15UL * 60UL * 1000UL;
+// How long the finished effect stays before falling back to idle (UI slider).
+constexpr uint8_t kDefaultFinishedMinutes = 15;  // 1..15
+constexpr uint8_t kMinFinishedMinutes = 1;
+constexpr uint8_t kMaxFinishedMinutes = 15;
 // Idle longer than this turns the bar off until the UI or a print wakes it.
 constexpr unsigned long kStandbyAfterIdleMs = 120UL * 60UL * 1000UL;
 constexpr uint8_t kDefaultBrightnessPercent = 50;
 constexpr uint8_t kDefaultSpeedPercent = 50;
+
+inline unsigned long finishedHoldMs(uint8_t minutes) {
+  return static_cast<unsigned long>(minutes) * 60UL * 1000UL;
+}
 }  // namespace led_cfg
 
 namespace ota_cfg {

@@ -31,9 +31,11 @@ class LedController {
  public:
   void begin(uint8_t dataPin, uint16_t ledCount);
   void setStyle(const LedStyle& style);
+  void setFinishedHoldMs(unsigned long holdMs) { finishedHoldMs_ = holdMs; }
   void setAsleep(bool asleep) { asleep_ = asleep; }
   void render(SystemState state, const PrinterTelemetry& telemetry, unsigned long nowMs);
   uint16_t ledCount() const { return count_; }
+  unsigned long finishedHoldMs() const { return finishedHoldMs_; }
 
  private:
   bool addLedsForPin(uint8_t pin);
@@ -58,5 +60,6 @@ class LedController {
   uint16_t count_ = hw::kDefaultNumLeds;
   LedStyle style_;
   bool asleep_ = false;
+  unsigned long finishedHoldMs_ = led_cfg::finishedHoldMs(led_cfg::kDefaultFinishedMinutes);
   uint8_t heat_[hw::kMaxNumLeds] = {};
 };

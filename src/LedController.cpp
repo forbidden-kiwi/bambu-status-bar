@@ -348,7 +348,7 @@ void LedController::render(SystemState state, const PrinterTelemetry& telemetry,
   FastLED.setBrightness(brightnessToPwm(style_.brightness));
 
   if (state == SystemState::Finished && telemetry.finishedAtMs != 0 &&
-      nowMs - telemetry.finishedAtMs >= led_cfg::kFinishedSolidMs) {
+      nowMs - telemetry.finishedAtMs >= finishedHoldMs_) {
     state = SystemState::Idle;
   }
 

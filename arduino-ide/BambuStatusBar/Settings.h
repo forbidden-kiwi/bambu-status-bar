@@ -31,6 +31,7 @@ struct DeviceSettings {
 
   uint8_t brightness = led_cfg::kDefaultBrightnessPercent;  // 0..100
   uint8_t speed = led_cfg::kDefaultSpeedPercent;            // 1..100, 50 is 1x
+  uint8_t finishedMinutes = led_cfg::kDefaultFinishedMinutes;  // 1..15
 
   // Hardware for the WS2812 bar. Changing pin/count requires a reboot.
   uint8_t ledPin = hw::kDefaultDataPin;

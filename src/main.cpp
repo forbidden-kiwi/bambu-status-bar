@@ -86,6 +86,7 @@ void applyLedStyle() {
   style.finished = slot(cfg.finished);
   style.reverse = cfg.ledReverse;
   ledController.setStyle(style);
+  ledController.setFinishedHoldMs(led_cfg::finishedHoldMs(cfg.finishedMinutes));
 }
 
 void pollFactoryButton(unsigned long now) {
@@ -163,7 +164,7 @@ void loop() {
 
   bool idleVisual = shown == SystemState::Idle ||
                     (shown == SystemState::Finished && printerState.telemetry().finishedAtMs != 0 &&
-                     now - printerState.telemetry().finishedAtMs >= led_cfg::kFinishedSolidMs);
+                     now - printerState.telemetry().finishedAtMs >= ledController.finishedHoldMs());
   bool activity = web.consumeActivity();
   if (!idleVisual) {
     asleep = false;

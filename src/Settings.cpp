@@ -41,6 +41,7 @@ void SettingsStore::begin() {
   data_.apEnabled = prefs.getUChar("apen", 1) != 0;
   data_.brightness = prefs.getUChar("bri", led_cfg::kDefaultBrightnessPercent);
   data_.speed = prefs.getUChar("spd", led_cfg::kDefaultSpeedPercent);
+  data_.finishedMinutes = prefs.getUChar("finmin", led_cfg::kDefaultFinishedMinutes);
   data_.ledPin = prefs.getUChar("ledpin", hw::kDefaultDataPin);
   data_.ledCount = prefs.getUShort("ledcnt", hw::kDefaultNumLeds);
 
@@ -71,6 +72,12 @@ void SettingsStore::clamp() {
   if (data_.brightness > 100) data_.brightness = 100;
   if (data_.speed < 1) data_.speed = 1;
   if (data_.speed > 100) data_.speed = 100;
+  if (data_.finishedMinutes < led_cfg::kMinFinishedMinutes) {
+    data_.finishedMinutes = led_cfg::kMinFinishedMinutes;
+  }
+  if (data_.finishedMinutes > led_cfg::kMaxFinishedMinutes) {
+    data_.finishedMinutes = led_cfg::kMaxFinishedMinutes;
+  }
   if (!hw::isSupportedLedDataPin(data_.ledPin)) data_.ledPin = hw::kDefaultDataPin;
   if (data_.ledCount < 1) data_.ledCount = 1;
   if (data_.ledCount > hw::kMaxNumLeds) data_.ledCount = hw::kMaxNumLeds;
@@ -103,6 +110,7 @@ void SettingsStore::save() {
   prefs.putUChar("apen", data_.apEnabled ? 1 : 0);
   prefs.putUChar("bri", data_.brightness);
   prefs.putUChar("spd", data_.speed);
+  prefs.putUChar("finmin", data_.finishedMinutes);
   prefs.putUChar("ledpin", data_.ledPin);
   prefs.putUShort("ledcnt", data_.ledCount);
   saveSlot(prefs, data_.idle, "ir", "ig", "ib", "idlefx");
@@ -134,6 +142,7 @@ void SettingsStore::clear() {
 void SettingsStore::resetLights() {
   data_.brightness = led_cfg::kDefaultBrightnessPercent;
   data_.speed = led_cfg::kDefaultSpeedPercent;
+  data_.finishedMinutes = led_cfg::kDefaultFinishedMinutes;
   data_.idle = LightSlot{255, 255, 255, LedEffect::Pulse};
   data_.printing = LightSlot{255, 255, 255, LedEffect::Progress};
   data_.error = LightSlot{255, 0, 0, LedEffect::Strobe};

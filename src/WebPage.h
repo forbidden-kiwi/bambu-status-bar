@@ -70,7 +70,11 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
 .color-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 .light-rows{display:grid;gap:12px;margin-top:8px}
 .light-row{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px;align-items:end}
-@media(max-width:640px){.light-row{grid-template-columns:1fr}}
+/* Portrait phone: keep color + animation on one row (compact color well). */
+@media(max-width:640px){
+  .light-row{grid-template-columns:minmax(72px,96px) minmax(0,1fr);gap:10px}
+  .light-row input[type=color]{min-height:48px;padding:4px}
+}
 .check{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0;padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:#0f1721;cursor:pointer}
 .check>span{flex:1;min-width:0;font-size:14px;font-weight:600;color:#d5e1ed;line-height:1.35}
 .check input[type=checkbox]{appearance:none;-webkit-appearance:none;width:46px;height:28px;flex:0 0 auto;margin:0;padding:0;border-radius:999px;border:1px solid #34506e;background:#1a2836;position:relative;cursor:pointer;transition:background .2s ease,border-color .2s ease,box-shadow .2s ease}
@@ -173,11 +177,12 @@ details[open]>.section-summary .section-toggle-icon::before{content:'-'}
     <div class="section-summary-side"><span class="summary-pill info" id="lightPill" data-i="pill_live">Live</span><span class="section-toggle-icon"></span></div>
   </summary>
   <div class="section-body">
-    <p class="micro" data-i="light_hint">Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig bleibt 15 Minuten, danach Leerlauf.</p>
+    <p class="micro" data-i="light_hint">Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig-Dauer stellt ein, wie lange der Fertig-Effekt bleibt.</p>
     <div class="grid-2">
       <div class="field"><label for="brightness"><span data-i="light_brightness">Brightness</span> <span id="briVal"></span></label><input id="brightness" type="range" min="0" max="100" value="50"></div>
       <div class="field"><label for="speed"><span data-i="light_speed">Speed</span> <span id="spdVal"></span></label><input id="speed" type="range" min="1" max="100" value="50"></div>
     </div>
+    <div class="field"><label for="finishedMinutes"><span data-i="light_finished_hold">Finished duration</span> <span id="finVal"></span></label><input id="finishedMinutes" type="range" min="1" max="15" value="15"></div>
     <div class="grid-2">
       <div class="field"><label for="ledPin" data-i="light_pin">LED data pin (GPIO)</label><input id="ledPin" type="number" min="0" max="48" step="1" value="19"></div>
       <div class="field"><label for="ledCount" data-i="light_count">LED count</label><input id="ledCount" type="number" min="1" max="64" step="1" value="18"></div>
@@ -281,6 +286,7 @@ printer_ip:"Drucker-IP oder Hostname",serial:"Seriennummer",code:"Access Code",
 local_status:"Local Status:",bind:"Lokal verbinden",bind_hint:"Speichert die Druckerdaten und verbindet MQTT ohne Neustart.",
 sec_light:"Light Colors",sec_light_desc:"Helligkeit, Geschwindigkeit, Animationen und Statusfarben. Änderungen gelten sofort.",
 pill_live:"Live",light_brightness:"Helligkeit",light_speed:"Geschwindigkeit",
+light_finished_hold:"Fertig-Dauer",light_min_unit:"min",
 light_idle:"Leerlauf",light_print:"Druck",light_error:"Fehler",
 light_homing:"Referenzfahrt",light_leveling:"Nivellieren",light_preparing:"Vorbereitung",
 light_heating:"Heizen",light_downloading:"Download",light_paused:"Pause",light_finished:"Fertig",
@@ -295,7 +301,7 @@ light_pin:"LED-Datenpin (GPIO)",light_count:"LED-Anzahl",
 light_hw_hint:"Änderung von Pin oder Anzahl startet das Gerät neu (FastLED-Init).",
 fx_pulse:"Atmen",fx_solid:"Fest",fx_comet:"Komet",fx_wave:"Welle",fx_strobe:"Blinken",fx_progress:"Fortschritt",
 fx_rainbow:"Regenbogen",fx_sparkle:"Funkeln",fx_ember:"Glut",
-light_reset:"Farben & Animationen zurücksetzen",light_hint:"Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig bleibt 15 Minuten, danach Leerlauf.",
+light_reset:"Farben & Animationen zurücksetzen",light_hint:"Farbe und Animation pro Status. Helligkeit und Geschwindigkeit gelten für alle. Fertig-Dauer stellt ein, wie lange der Fertig-Effekt bleibt.",
 sec_ap:"Setup Hotspot",sec_ap_desc:"Fallback-Access-Point, falls kein WLAN erreichbar ist.",
 ap_enable:"Hotspot auch bei verbundenem Wi-Fi anlassen",ap_ssid:"Hotspot-Name",ap_pass:"Hotspot-Passwort",ap_ip:"Hotspot-IP",
 ap_hint:"Ohne Wi-Fi bleibt der Hotspot an, auch wenn er hier aus ist. Passwort leer = offen, sonst mindestens 8 Zeichen.",
@@ -350,6 +356,7 @@ printer_ip:"Printer IP or Hostname",serial:"Printer Serial Number",code:"Access 
 local_status:"Local Status:",bind:"Connect Local",bind_hint:"Saves printer credentials and reconnects MQTT without reboot.",
 sec_light:"Light Colors",sec_light_desc:"Brightness, speed, animations and status colors. Changes apply live.",
 pill_live:"Live",light_brightness:"Brightness",light_speed:"Speed",
+light_finished_hold:"Finished duration",light_min_unit:"min",
 light_idle:"Idle",light_print:"Printing",light_error:"Error",
 light_homing:"Homing",light_leveling:"Leveling",light_preparing:"Preparing",
 light_heating:"Heating",light_downloading:"Downloading",light_paused:"Paused",light_finished:"Finished",
@@ -364,7 +371,7 @@ light_pin:"LED data pin (GPIO)",light_count:"LED count",
 light_hw_hint:"Changing pin or count reboots the device so FastLED can re-init.",
 fx_pulse:"Pulse",fx_solid:"Solid",fx_comet:"Comet",fx_wave:"Wave",fx_strobe:"Strobe",fx_progress:"Progress",
 fx_rainbow:"Rainbow",fx_sparkle:"Sparkle",fx_ember:"Ember",
-light_reset:"Reset colors & animations",light_hint:"Color and animation per status. Brightness and speed apply to all. Finished stays for 15 minutes, then idle.",
+light_reset:"Reset colors & animations",light_hint:"Color and animation per status. Brightness and speed apply to all. Finished duration controls how long the finished effect stays.",
 sec_ap:"Setup Hotspot",sec_ap_desc:"Fallback access point when home Wi-Fi is unavailable.",
 ap_enable:"Keep hotspot enabled when Wi-Fi is up",ap_ssid:"Hotspot Name",ap_pass:"Hotspot Password",ap_ip:"Hotspot IP",
 ap_hint:"Without Wi-Fi the hotspot stays on even if disabled here. Empty password = open, otherwise at least 8 characters.",
@@ -444,6 +451,7 @@ function applyLang(){
     const sel=$(s.key+'Effect'); if(!sel) return;
     [...sel.options].forEach(o=>{ if(o.dataset.i) o.textContent=t(o.dataset.i); });
   });
+  if($("finVal")&&$("finishedMinutes")) $("finVal").textContent=$("finishedMinutes").value+" "+t("light_min_unit");
 }
 function setStatus(line,detail){$("status").textContent=line||"";$("statusDetail").textContent=detail||""}
 function errText(code){return t("err_"+String(code||"").replace(/-/g,"_"))}
@@ -515,6 +523,7 @@ function applyStatus(data){
   buildLightRows();
   if(document.activeElement!==$("brightness")) $("brightness").value=leds.brightness??50;
   if(document.activeElement!==$("speed")) $("speed").value=leds.speed??50;
+  if(document.activeElement!==$("finishedMinutes")) $("finishedMinutes").value=leds.finishedMinutes??15;
   LIGHT_SLOTS.forEach(s=>{
     const def=s;
     setIdle(s.key+'Color', leds[s.key]||def.color);
@@ -532,6 +541,7 @@ function applyStatus(data){
   }
   $("briVal").textContent=$("brightness").value+"%";
   $("spdVal").textContent=$("speed").value+"%";
+  $("finVal").textContent=$("finishedMinutes").value+" "+t("light_min_unit");
   setIdle("apEnabled", !!ap.enabled);
   setIdle("apSsid", ap.ssid||"");
   setIdle("apPass", ap.password||"");
@@ -587,6 +597,7 @@ async function saveLeds(){
   const body={
     brightness:Number($("brightness").value),
     speed:Number($("speed").value),
+    finishedMinutes:Number($("finishedMinutes").value),
     reverse:$("ledReverse").checked,
     followChamberLight:$("followChamberLight").checked,
     pin:Number($("ledPin").value),
@@ -622,8 +633,13 @@ $("bindBtn").onclick=async()=>{
   try{await api("/api/printer",{ip:$("printerIp").value.trim(),serial:$("printerSerial").value.trim(),code:$("printerCode").value.trim()});setStatus(t("saved"),"");$("printerCode").value=""}
   catch(e){setStatus(errText(e.message),"")}
 };
-["brightness","speed"].forEach(id=>{
-  $(id).addEventListener("input",()=>{$("briVal").textContent=$("brightness").value+"%";$("spdVal").textContent=$("speed").value+"%";scheduleLeds()});
+["brightness","speed","finishedMinutes"].forEach(id=>{
+  $(id).addEventListener("input",()=>{
+    $("briVal").textContent=$("brightness").value+"%";
+    $("spdVal").textContent=$("speed").value+"%";
+    $("finVal").textContent=$("finishedMinutes").value+" "+t("light_min_unit");
+    scheduleLeds();
+  });
 });
 ["ledPin","ledCount"].forEach(id=>$(id).addEventListener("change",scheduleLeds));
 $("ledReverse").addEventListener("change",scheduleLeds);

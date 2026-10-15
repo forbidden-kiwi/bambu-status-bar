@@ -752,6 +752,7 @@ void WebUi::handleStatus() {
   };
   leds["brightness"] = cfg.brightness;
   leds["speed"] = cfg.speed;
+  leds["finishedMinutes"] = cfg.finishedMinutes;
   leds["pin"] = cfg.ledPin;
   leds["count"] = cfg.ledCount;
   leds["maxCount"] = hw::kMaxNumLeds;
@@ -915,7 +916,12 @@ void WebUi::handleLeds() {
   }
   int brightness = doc["brightness"].as<int>();
   int speed = doc["speed"].as<int>();
-  if (brightness < 0 || brightness > 100 || speed < 1 || speed > 100) {
+  int finishedMinutes = doc["finishedMinutes"].is<int>()
+                            ? doc["finishedMinutes"].as<int>()
+                            : store_.data().finishedMinutes;
+  if (brightness < 0 || brightness > 100 || speed < 1 || speed > 100 ||
+      finishedMinutes < led_cfg::kMinFinishedMinutes ||
+      finishedMinutes > led_cfg::kMaxFinishedMinutes) {
     sendError(400, "bad-leds");
     return;
   }
@@ -965,6 +971,7 @@ void WebUi::handleLeds() {
 
   cfg.brightness = static_cast<uint8_t>(brightness);
   cfg.speed = static_cast<uint8_t>(speed);
+  cfg.finishedMinutes = static_cast<uint8_t>(finishedMinutes);
   cfg.idle = idle;
   cfg.printing = printing;
   cfg.error = error;

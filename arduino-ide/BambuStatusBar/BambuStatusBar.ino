@@ -881,7 +881,7 @@ void LedController::render(SystemState state, const PrinterTelemetry& telemetry,
   FastLED.setBrightness(brightnessToPwm(style_.brightness));
 
   if (state == SystemState::Finished && telemetry.finishedAtMs != 0 &&
-      nowMs - telemetry.finishedAtMs >= led_cfg::kFinishedSolidMs) {
+      nowMs - telemetry.finishedAtMs >= finishedHoldMs_) {
     state = SystemState::Idle;
   }
 
@@ -1102,6 +1102,7 @@ void SettingsStore::begin() {
   data_.apEnabled = prefs.getUChar("apen", 1) != 0;
   data_.brightness = prefs.getUChar("bri", led_cfg::kDefaultBrightnessPercent);
   data_.speed = prefs.getUChar("spd", led_cfg::kDefaultSpeedPercent);
+  data_.finishedMinutes = prefs.getUChar("finmin", led_cfg::kDefaultFinishedMinutes);
   data_.ledPin = prefs.getUChar("ledpin", hw::kDefaultDataPin);
   data_.ledCount = prefs.getUShort("ledcnt", hw::kDefaultNumLeds);
 
@@ -1132,6 +1133,12 @@ void SettingsStore::clamp() {
   if (data_.brightness > 100) data_.brightness = 100;
   if (data_.speed < 1) data_.speed = 1;
   if (data_.speed > 100) data_.speed = 100;
+  if (data_.finishedMinutes < led_cfg::kMinFinishedMinutes) {
+    data_.finishedMinutes = led_cfg::kMinFinishedMinutes;
+  }
+  if (data_.finishedMinutes > led_cfg::kMaxFinishedMinutes) {
+    data_.finishedMinutes = led_cfg::kMaxFinishedMinutes;
+  }
   if (!hw::isSupportedLedDataPin(data_.ledPin)) data_.ledPin = hw::kDefaultDataPin;
   if (data_.ledCount < 1) data_.ledCount = 1;
   if (data_.ledCount > hw::kMaxNumLeds) data_.ledCount = hw::kMaxNumLeds;
@@ -1164,6 +1171,7 @@ void SettingsStore::save() {
   prefs.putUChar("apen", data_.apEnabled ? 1 : 0);
   prefs.putUChar("bri", data_.brightness);
   prefs.putUChar("spd", data_.speed);
+  prefs.putUChar("finmin", data_.finishedMinutes);
   prefs.putUChar("ledpin", data_.ledPin);
   prefs.putUShort("ledcnt", data_.ledCount);
   saveSlot(prefs, data_.idle, "ir", "ig", "ib", "idlefx");
@@ -1195,6 +1203,7 @@ void SettingsStore::clear() {
 void SettingsStore::resetLights() {
   data_.brightness = led_cfg::kDefaultBrightnessPercent;
   data_.speed = led_cfg::kDefaultSpeedPercent;
+  data_.finishedMinutes = led_cfg::kDefaultFinishedMinutes;
   data_.idle = LightSlot{255, 255, 255, LedEffect::Pulse};
   data_.printing = LightSlot{255, 255, 255, LedEffect::Progress};
   data_.error = LightSlot{255, 0, 0, LedEffect::Strobe};
@@ -2484,6 +2493,7 @@ void WebUi::handleStatus() {
   };
   leds["brightness"] = cfg.brightness;
   leds["speed"] = cfg.speed;
+  leds["finishedMinutes"] = cfg.finishedMinutes;
   leds["pin"] = cfg.ledPin;
   leds["count"] = cfg.ledCount;
   leds["maxCount"] = hw::kMaxNumLeds;
@@ -2647,7 +2657,12 @@ void WebUi::handleLeds() {
   }
   int brightness = doc["brightness"].as<int>();
   int speed = doc["speed"].as<int>();
-  if (brightness < 0 || brightness > 100 || speed < 1 || speed > 100) {
+  int finishedMinutes = doc["finishedMinutes"].is<int>()
+                            ? doc["finishedMinutes"].as<int>()
+                            : store_.data().finishedMinutes;
+  if (brightness < 0 || brightness > 100 || speed < 1 || speed > 100 ||
+      finishedMinutes < led_cfg::kMinFinishedMinutes ||
+      finishedMinutes > led_cfg::kMaxFinishedMinutes) {
     sendError(400, "bad-leds");
     return;
   }
@@ -2697,6 +2712,7 @@ void WebUi::handleLeds() {
 
   cfg.brightness = static_cast<uint8_t>(brightness);
   cfg.speed = static_cast<uint8_t>(speed);
+  cfg.finishedMinutes = static_cast<uint8_t>(finishedMinutes);
   cfg.idle = idle;
   cfg.printing = printing;
   cfg.error = error;
@@ -2952,6 +2968,7 @@ void applyLedStyle() {
   style.finished = slot(cfg.finished);
   style.reverse = cfg.ledReverse;
   ledController.setStyle(style);
+  ledController.setFinishedHoldMs(led_cfg::finishedHoldMs(cfg.finishedMinutes));
 }
 
 void pollFactoryButton(unsigned long now) {
@@ -3029,7 +3046,7 @@ void loop() {
 
   bool idleVisual = shown == SystemState::Idle ||
                     (shown == SystemState::Finished && printerState.telemetry().finishedAtMs != 0 &&
-                     now - printerState.telemetry().finishedAtMs >= led_cfg::kFinishedSolidMs);
+                     now - printerState.telemetry().finishedAtMs >= ledController.finishedHoldMs());
   bool activity = web.consumeActivity();
   if (!idleVisual) {
     asleep = false;
