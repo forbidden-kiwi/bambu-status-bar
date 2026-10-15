@@ -691,10 +691,6 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
   }
   if (stepMs < 8) stepMs = 8;
 
-  // Persistence trail — independent of travel direction (avoids jump on turnaround).
-  const uint8_t fade = static_cast<uint8_t>(18 + (100 - style_.speed) / 4);
-  fadeToBlackBy(leds_, count_, fade);
-
   if (count_ == 1) {
     leds_[0] = color;
     showLeds();
@@ -707,8 +703,18 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
   const float phase = static_cast<float>(nowMs % periodMs) / static_cast<float>(periodMs);
   // 0 → span → 0 with cos ease: derivative is 0 at both ends.
   const float pos = span * 0.5f * (1.0f - cosf(phase * 2.0f * 3.14159265f));
+  const bool atStart = pos <= 1.0f;
+  const bool atEnd = pos >= span - 1.0f;
 
-  // Anti-aliased head across neighboring LEDs (no directional geometric tail).
+  // Persistence trail — skip outermost LEDs while the head dwells there so tips don't flicker.
+  const uint8_t fade = static_cast<uint8_t>(18 + (100 - style_.speed) / 4);
+  for (int i = 0; i < static_cast<int>(count_); i++) {
+    if (atStart && i == 0) continue;
+    if (atEnd && i == static_cast<int>(count_) - 1) continue;
+    leds_[i].nscale8(255 - fade);
+  }
+
+  // Anti-aliased head — absolute write so fade never fights the tip brightness.
   const int i0 = static_cast<int>(pos);
   const float frac = pos - static_cast<float>(i0);
   auto plot = [&](int idx, float bri) {
@@ -716,10 +722,14 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
     if (bri > 1.0f) bri = 1.0f;
     CRGB c = color;
     c.nscale8(static_cast<uint8_t>(bri * 255.0f));
-    leds_[idx] += c;
+    leds_[idx] = c;
   };
   plot(i0, 1.0f - frac);
   plot(i0 + 1, frac);
+
+  // Hold the outermost pixel solid for the whole turnaround dwell.
+  if (atStart) leds_[0] = color;
+  if (atEnd) leds_[static_cast<int>(count_) - 1] = color;
   showLeds();
 }
 
