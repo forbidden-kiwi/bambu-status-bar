@@ -703,8 +703,9 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
 void LedController::renderWave(unsigned long nowMs, uint8_t hue) {
   float speed = style_.speed / 50.0f;
   float phase = nowMs * 0.002f * speed;
+  // One sine period across the whole strip (single crest), independent of LED count.
   for (int i = 0; i < static_cast<int>(count_); i++) {
-    uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
+    uint8_t v = sin8(static_cast<uint8_t>((i * 256) / count_ + phase * 40));
     leds_[i] = CHSV(hue, 255, v);
   }
   showLeds();
@@ -714,8 +715,9 @@ void LedController::renderWaveColor(CRGB color, unsigned long nowMs) {
   // Scale the chosen RGB color — do not force HSV sat=255 (white → hue 0 = red).
   float speed = style_.speed / 50.0f;
   float phase = nowMs * 0.002f * speed;
+  // One sine period across the whole strip (single crest), independent of LED count.
   for (int i = 0; i < static_cast<int>(count_); i++) {
-    uint8_t v = sin8(static_cast<uint8_t>(i * 16 + phase * 40));
+    uint8_t v = sin8(static_cast<uint8_t>((i * 256) / count_ + phase * 40));
     CRGB lit = color;
     lit.nscale8(v);
     leds_[i] = lit;
