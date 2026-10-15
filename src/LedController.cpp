@@ -151,50 +151,42 @@ void LedController::renderHeating(uint8_t percent) {
 }
 
 void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs) {
-  // Continuous sub-pixel position (ms per LED); soft anti-aliased head + trail.
-  fill_solid(leds_, count_, CRGB::Black);
+  // Soft ping-pong (zero velocity at ends) + fade trail so reverse never snaps the tail.
   if (count_ == 0) {
     showLeds();
     return;
   }
   if (stepMs < 8) stepMs = 8;
+
+  // Persistence trail — independent of travel direction (avoids jump on turnaround).
+  const uint8_t fade = static_cast<uint8_t>(18 + (100 - style_.speed) / 4);
+  fadeToBlackBy(leds_, count_, fade);
+
   if (count_ == 1) {
     leds_[0] = color;
     showLeds();
     return;
   }
 
-  const uint16_t span = count_ - 1;
-  const uint32_t halfTrip = static_cast<uint32_t>(span) * stepMs;
-  const uint32_t roundTrip = halfTrip * 2;
-  const uint32_t t = nowMs % roundTrip;
-  float pos;
-  float dir;
-  if (t <= halfTrip) {
-    pos = static_cast<float>(t) / static_cast<float>(stepMs);
-    dir = 1.0f;
-  } else {
-    pos = static_cast<float>(span) - static_cast<float>(t - halfTrip) / static_cast<float>(stepMs);
-    dir = -1.0f;
-  }
+  const float span = static_cast<float>(count_ - 1);
+  // One full round trip ≈ same duration as the old linear bounce.
+  const uint32_t periodMs = static_cast<uint32_t>(span * stepMs * 2.0f);
+  const float phase = static_cast<float>(nowMs % periodMs) / static_cast<float>(periodMs);
+  // 0 → span → 0 with cos ease: derivative is 0 at both ends.
+  const float pos = span * 0.5f * (1.0f - cosf(phase * 2.0f * 3.14159265f));
 
-  constexpr float kTail = 5.5f;
-  for (int i = 0; i < static_cast<int>(count_); i++) {
-    const float behind = -dir * (static_cast<float>(i) - pos);
-    float bri = 0.0f;
-    if (behind >= -1.0f && behind <= kTail) {
-      if (behind <= 0.0f) {
-        bri = 1.0f + behind;  // fractional head across neighboring LEDs
-      } else {
-        bri = 1.0f / (1.0f + behind * behind * 0.4f);
-      }
-    }
-    if (bri <= 0.02f) continue;
+  // Anti-aliased head across neighboring LEDs (no directional geometric tail).
+  const int i0 = static_cast<int>(pos);
+  const float frac = pos - static_cast<float>(i0);
+  auto plot = [&](int idx, float bri) {
+    if (idx < 0 || idx >= static_cast<int>(count_) || bri <= 0.0f) return;
     if (bri > 1.0f) bri = 1.0f;
     CRGB c = color;
     c.nscale8(static_cast<uint8_t>(bri * 255.0f));
-    leds_[i] = c;
-  }
+    leds_[idx] += c;
+  };
+  plot(i0, 1.0f - frac);
+  plot(i0 + 1, frac);
   showLeds();
 }
 
