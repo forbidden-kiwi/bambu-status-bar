@@ -151,13 +151,13 @@ void LedController::renderHeating(uint8_t percent) {
 }
 
 void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs) {
-  // Soft ping-pong (zero velocity at ends) + fade trail so reverse never snaps the tail.
+  // Knight Rider scanner: linear ping-pong + symmetric soft glow (no directional trail to flip).
+  fill_solid(leds_, count_, CRGB::Black);
   if (count_ == 0) {
     showLeds();
     return;
   }
   if (stepMs < 8) stepMs = 8;
-
   if (count_ == 1) {
     leds_[0] = color;
     showLeds();
@@ -165,38 +165,29 @@ void LedController::renderComet(CRGB color, unsigned long nowMs, uint16_t stepMs
   }
 
   const float span = static_cast<float>(count_ - 1);
-  // One full round trip ≈ same duration as the old linear bounce.
-  const uint32_t periodMs = static_cast<uint32_t>(span * stepMs * 2.0f);
-  const float phase = static_cast<float>(nowMs % periodMs) / static_cast<float>(periodMs);
-  // 0 → span → 0 with cos ease: derivative is 0 at both ends.
-  const float pos = span * 0.5f * (1.0f - cosf(phase * 2.0f * 3.14159265f));
-  const bool atStart = pos <= 1.0f;
-  const bool atEnd = pos >= span - 1.0f;
+  const uint32_t halfTrip = static_cast<uint32_t>(span * static_cast<float>(stepMs));
+  const uint32_t roundTrip = halfTrip * 2;
+  const uint32_t t = nowMs % roundTrip;
+  // Constant-speed triangle wave — classic KITT pacing.
+  const float pos = (t <= halfTrip)
+                        ? static_cast<float>(t) / static_cast<float>(stepMs)
+                        : span - static_cast<float>(t - halfTrip) / static_cast<float>(stepMs);
 
-  // Persistence trail — skip outermost LEDs while the head dwells there so tips don't flicker.
-  const uint8_t fade = static_cast<uint8_t>(18 + (100 - style_.speed) / 4);
+  // Soft eye width scales with strip length; keep a readable glow on short bars.
+  float halfWidth = span * 0.28f;
+  if (halfWidth < 2.5f) halfWidth = 2.5f;
+  if (halfWidth > 7.0f) halfWidth = 7.0f;
+
   for (int i = 0; i < static_cast<int>(count_); i++) {
-    if (atStart && i == 0) continue;
-    if (atEnd && i == static_cast<int>(count_) - 1) continue;
-    leds_[i].nscale8(255 - fade);
-  }
-
-  // Anti-aliased head — absolute write so fade never fights the tip brightness.
-  const int i0 = static_cast<int>(pos);
-  const float frac = pos - static_cast<float>(i0);
-  auto plot = [&](int idx, float bri) {
-    if (idx < 0 || idx >= static_cast<int>(count_) || bri <= 0.0f) return;
-    if (bri > 1.0f) bri = 1.0f;
+    const float d = fabsf(static_cast<float>(i) - pos);
+    if (d >= halfWidth) continue;
+    const float u = 1.0f - (d / halfWidth);
+    // Quadratic falloff = bright core, soft flanks (Knight Rider look).
+    const float bri = u * u;
     CRGB c = color;
     c.nscale8(static_cast<uint8_t>(bri * 255.0f));
-    leds_[idx] = c;
-  };
-  plot(i0, 1.0f - frac);
-  plot(i0 + 1, frac);
-
-  // Hold the outermost pixel solid for the whole turnaround dwell.
-  if (atStart) leds_[0] = color;
-  if (atEnd) leds_[static_cast<int>(count_) - 1] = color;
+    leds_[i] = c;
+  }
   showLeds();
 }
 
