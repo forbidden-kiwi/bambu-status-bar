@@ -324,9 +324,13 @@ void PrinterStateMachine::resolveFromLatched(unsigned long nowMs) {
   }
   if (gcodeIs(gcode, "FINISH")) {
     if (sawActivePrint_) {
+      // Printer keeps publishing FINISH — only stamp the clock on entry so the
+      // finished-hold timer can expire.
+      if (state_ != SystemState::Finished) {
+        telemetry_.finishedAtMs = nowMs;
+      }
       state_ = SystemState::Finished;
       telemetry_.progressPercent = 100;
-      telemetry_.finishedAtMs = nowMs;
     } else {
       state_ = SystemState::Idle;
     }
@@ -404,9 +408,11 @@ void PrinterStateMachine::resolveFromLatched(unsigned long nowMs) {
   }
   if (isIdleStageMarker(stage) || stage == 0) {
     if (sawActivePrint_ && isIdleStageMarker(stage) && haveMcPercent_ && mcPercent_ >= 100) {
+      if (state_ != SystemState::Finished) {
+        telemetry_.finishedAtMs = nowMs;
+      }
       state_ = SystemState::Finished;
       telemetry_.progressPercent = 100;
-      telemetry_.finishedAtMs = nowMs;
     } else {
       state_ = SystemState::Idle;
     }

@@ -53,6 +53,19 @@ void test_finished_after_observed_running() {
   TEST_ASSERT_EQUAL_UINT8(100, sm.telemetry().progressPercent);
 }
 
+void test_repeated_finish_does_not_refresh_finished_at() {
+  PrinterStateMachine sm;
+  ArduinoJson::JsonDocument run;
+  sm.update(parsePrint(run, R"({"gcode_state":"RUNNING","mc_percent":99})"), 1000);
+  ArduinoJson::JsonDocument done1;
+  sm.update(parsePrint(done1, R"({"gcode_state":"FINISH","stg_cur":255})"), 2000);
+  TEST_ASSERT_EQUAL_UINT32(2000, sm.telemetry().finishedAtMs);
+  ArduinoJson::JsonDocument done2;
+  sm.update(parsePrint(done2, R"({"gcode_state":"FINISH","stg_cur":255})"), 5000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SystemState::Finished), static_cast<int>(sm.state()));
+  TEST_ASSERT_EQUAL_UINT32(2000, sm.telemetry().finishedAtMs);
+}
+
 void test_paused_from_gcode_state_pause() {
   PrinterStateMachine sm;
   ArduinoJson::JsonDocument doc;
@@ -261,6 +274,7 @@ int main(int, char**) {
   RUN_TEST(test_stg_cur_255_without_prior_job_is_idle);
   RUN_TEST(test_sticky_finish_on_connect_is_idle);
   RUN_TEST(test_finished_after_observed_running);
+  RUN_TEST(test_repeated_finish_does_not_refresh_finished_at);
   RUN_TEST(test_paused_from_gcode_state_pause);
   RUN_TEST(test_hms_alone_does_not_force_error);
   RUN_TEST(test_print_error_triggers_error);
